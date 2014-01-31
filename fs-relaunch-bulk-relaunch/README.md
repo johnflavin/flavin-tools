@@ -12,9 +12,9 @@ I developed a set of scripts to efficiently work around this bug.
 
 # USAGE
 Things you need to have set up before you do this:
-* Assign your batch a number `N`. The output files will all be named with that batch number.
-* Generate user and password alias tokens from the XNAT pipeline engine. (Right now I do this by launching a job to the SGE, cancelling it, finding the launch string, and copying the tokens. There is likely a better way.) I'll call them `USERTOKEN` and `PASSTOKEN`.
-* If your FS files are old enough, they may not have hippocampal segmentation files. You could upload them into the FreeSurfer files before you launch the job. If you did not do that, then you can move them by passing the directory where you've stored them to one of the scripts. I'll call that directory `HIPPO_DIR`; the files should be in the directory `HIPPO_DIR/MR_LABEL/mri` (where the latter two directories are where FreeSurfer would keep them if you've stored them locally).
+*   Assign your batch a number `N`. The output files will all be named with that batch number.
+*   Generate user and password alias tokens from the XNAT pipeline engine. (Right now I do this by launching a job to the SGE, cancelling it, finding the launch string, and copying the tokens. There is likely a better way.) I'll call them `USERTOKEN` and `PASSTOKEN`.
+*   If your FS files are old enough, they may not have hippocampal segmentation files. You could upload them into the FreeSurfer files before you launch the job. If you did not do that, then you can move them by passing the directory where you've stored them to one of the scripts. I'll call that directory `HIPPO_DIR`; the files should be in the directory `HIPPO_DIR/MR_LABEL/mri` (where the latter two directories are where FreeSurfer would keep them if you've stored them locally).
 
 ## BATCHN.IDS
 `echo` (or copy or whatever) the FreeSurfer assessor ids of the failed jobs into a file `batchN.ids`, one id per line. The other scripts will run by going through this `.ids` file line-by-line.
@@ -23,14 +23,14 @@ Things you need to have set up before you do this:
 Run `./prep.batch.sh N USERTOKEN PASSTOKEN`
 
 This will generate three files:
-1. `batchN.prepped` — used by the next script
-2. `batchN.sourceme` — this gets run in the end to launch the jobs
-3. `batchN.prep.log` — a log file
+1.  `batchN.prepped` — used by the next script
+2.  `batchN.sourceme` — this gets run in the end to launch the jobs
+3.  `batchN.prep.log` — a log file
 
 ## MOVE FILES
 The instructions differ here depending on if you want to move the hippocampal files or not.
-* If you already have your hippocampal segmentation files in place, run `./mvfiles.batch.sh N`
-* If you need to move the hippocampal segmentation files now, run `./mvfiles.batch.sh -h HIPPO_DIR N`
+*   If you already have your hippocampal segmentation files in place, run `./mvfiles.batch.sh N`
+*   If you need to move the hippocampal segmentation files now, run `./mvfiles.batch.sh -h HIPPO_DIR N`
 
 The script generates one log file: `batchN.mvfiles.log`
 
@@ -38,3 +38,10 @@ The script generates one log file: `batchN.mvfiles.log`
 Run `./launch.batch.sh N`.
 
 Generates a log file: `batchN.log`. And it launches the jobs, which is nice.
+
+# OTHER FILES
+## `PREP.PY`
+Reads the queue log, gets the old launch string, builds the new launch string, finds some useful directories. I could have written this in bash, but for some reason I started with python and that's just how it stayed.
+
+## `MVFILES.SH`
+`mv`s the FreeSurfer files and, if necessary, the hippocampal files.

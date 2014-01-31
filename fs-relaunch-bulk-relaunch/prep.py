@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 usage='''
-Launch as "python batch4.py outfile fsAssessorId"
+Launch as "python batch4.py usertoken passtoken preplogfile launchfile fsAssessorId"
 '''
 # import os
 import sys
@@ -11,13 +11,11 @@ from itertools import izip
 
 
 try:
-    outfile = sys.argv[1]
-    fsAssessorId = sys.argv[2]
-except IndexError:
+    [usertoken,passtoken,preplogfile,launchfile,fsAssessorId] = sys.argv[1:]
+except:
     sys.exit(usage)
 
 breakLine = '---------------------------------------'
-hippoRootPath = '/tmp/flavin-fs'
 
 def pairwise(iterable):
     "s -> (s0,s1), (s2,s3), (s4, s5), ..."
@@ -45,8 +43,8 @@ oldLaunchStringList.insert(oldLaunchStringList.index('-supressNotification')+1,'
 # * Make 'useremail' my email
 # * Make 'userfullname' my name
 args = {
-    '-u': 'uuuuu',
-    '-pwd': 'ppppp',
+    '-u': usertoken,
+    '-pwd': passtoken,
     '-startAt': 'BATCH_FILE'
 }
 params = {
@@ -113,55 +111,26 @@ for line in errLogTailList:
 errLogMvMRDir = errLogMvLine.replace('  ',' ').split(' ')[2]
 mrLabel = errLogMvMRDir.split('/')[-1]
 
-##########################################
-# Move the files into place
-# rm the old dirs
 fsDir = '%s/%s'%(datestampDir,mrLabel)
-# print 'Moving FS files into place'
-# print 'Moving %s to %s/temp'.format(fsDir,mrLabel)
-# if not debug:
-#     shutil.move(fsDir,'%s/temp'%datestampDir)
-# else:
-#     print 'This is where I would move the files'
-# print 'Moving {0}/temp/ASSESSORS/{1}/DATA/{2} to {0}/{2}'.format(datestampDir,fsAssessorId,mrLabel)
-# if not debug:
-#     shutil.move('{0}/temp/ASSESSORS/{1}/DATA/{2}'.format(datestampDir,fsAssessorId,mrLabel),fsDir)
-# else:
-#     print 'This is where I would move the files'
-# print 'Removing %s/temp'%datestampDir
-# if not debug:
-#     shutil.rmtree('%s/temp'%datestampDir)
-# else:
-#     print 'This is where I would remove the old directories'
 
-
-# ##################################
-# # Move hippocampal segmentation files into place
-# # Currently stored in /tmp/flavin-fs/<mrLabel>/mri
-# print '\nSomething'
-# tempHippoPath = '%s/%s/mri'%(hippoRootPath,mrLabel)
-# fsHippoPath = '%s/mri'%fsDir
-# print 'Moving files from %s to %s'%(tempHippoPath,fsHippoPath)
-# hippoFiles = os.listdir('%s'%tempHippoPath)
-# if not debug:
-#     for filename in hippoFiles:
-#         print "Moving %s"%filename
-#         shutil.move('%s/%s'%(tempHippoPath,filename),'%s/%s'%(fsHippoPath,filename))
-# else:
-#     print 'This is where I would move the files'
 
 ########
-# Launch job
+# Create launch string, prep file, launch file
 ########
-print 'Writing launch string for assessor %s to file %s'%(fsAssessorId,outfile)
-print ' '.join(newLaunchStringList)
+newLaunchString = ' '.join(newLaunchStringList)
 
+print 'Writing prep string to '+preplogfile
 outstring='''%s
 %s
 MR label: %s
 Work dir: %s
 FS dir: %s
 Launch string: %s
-'''%(breakLine,fsAssessorId,mrLabel,workdir,fsDir,' '.join(newLaunchStringList))
-with open(outfile,'a') as f:
+'''%(breakLine,fsAssessorId,mrLabel,workdir,fsDir,newLaunchString)
+with open(preplogfile,'a') as f:
     f.write(outstring)
+
+print breakLine
+print 'Writing launch string for assessor %s to file %s'%(fsAssessorId,launchfile)
+with open(launchfile,'a') as f:
+    f.write(newLaunchString+'\n')

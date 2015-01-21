@@ -32,18 +32,21 @@ if not hostMatch.group('termslash'):
     host = host + '/'
 
 tokenJSON = ''.join(args.tokenJSON)
-token = json.loads(tokenJSON)
+try:
+    token = json.loads(tokenJSON)
+except ValueError:
+    sys.exit("There was a problem decoding the token json: "+tokenJSON)
 
 url = host + 'data/services/tokens/issue'
 r = requests.get(url, auth=(token['alias'],token['secret']), verify=False)
 
+errMessage = ""
 if r.status_code == 200:
     print(json.dumps(r.json()))
     sys.exit(0)
 elif r.status_code == 403:
-    print("Token has expired. You must update manually.")
+    errMessage = "Token has expired. You must update manually."
 else:
-    print("Something went wrong.")
+    errMessage = "Something went wrong."
 
-sys.exit("Status code {}".format(r.status_code))
-
+sys.exit("Status code {}\n{}".format(r.status_code,errMessage))

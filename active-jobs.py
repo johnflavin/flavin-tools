@@ -1,7 +1,7 @@
-import json, os, sys, requests
+import json, os, sys, requests, warnings
 
 host = 'https://cnda.wustl.edu'
-tokenFile = os.environ['HOME'] + '/cnda.json'
+tokenFile = os.environ['HOME'] + '/tokens/cnda.json'
 jobResultsFile = 'full-job-results.json'
 searchId = 'xs1397497056634_1'
 
@@ -14,7 +14,9 @@ try:
 except:
     sys.exit("Must have file %s with contents {'alias':USERNAME,'secret':PASSWORD}" % tokenFile)
 
-r = s.get(host + '/data/search/saved/%s/results?format=json' % searchId)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    r = s.get(host + '/data/search/saved/%s/results?format=json' % searchId)
 
 errMessage = ""
 if r.status_code == 200:

@@ -12,10 +12,6 @@ if [[ -n "$(ls *.json)" ]]; then
     rm *.json
 fi
 
-
-# Refresh token
-python ~/bin/refresh-token.py https://cnda.wustl.edu ~/cnda.json
-
 # Get jobs with running status
 export CNDAJOBS=`python ~/bin/active-jobs.py`
 

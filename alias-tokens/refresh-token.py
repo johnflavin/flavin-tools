@@ -10,9 +10,9 @@ idstring = "$Id: %s,v %s %s %s Exp $"%(progName,versionNumber,dateString,author)
 
 timeFormat = '%Y%m%d_%H%M%S'
 
-hostDict = {"cnda","https://cnda.wustl.edu/",
-            "tip-dev-flavin1","https://tip-dev-flavin1.nrg.mir/",
-            "cnda-dev-flavn1","https://cnda-dev-flavn1.nrg.mir/"}
+hostDict = {"cnda":"https://cnda.wustl.edu/",
+            "tip-dev-flavin1":"https://tip-dev-flavin1.nrg.mir/",
+            "cnda-dev-flavn1":"https://cnda-dev-flavn1.nrg.mir/"}
 
 #######################################################
 # PARSE INPUT ARGS
@@ -42,7 +42,7 @@ if 'host' in token:
     host = token['host']
 else:
     shortHost = os.path.basename(tokenFile).strip('.json')
-    if shortHost in hostDict:
+    if shortHost and shortHost in hostDict:
         host = hostDict[shortHost]
     else:
         sys.exit("Could not find 'host' as key in token file %s, and could not figure out host from its filename. Exiting.")

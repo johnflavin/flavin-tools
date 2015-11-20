@@ -51,8 +51,8 @@ else:
 hostMatch = re.match(r'(?P<http>https?://)?[^/]*(?P<termslash>/)?',host)
 if not hostMatch.group('http'):
     host = 'https://'+host
-if not hostMatch.group('termslash'):
-    host = host + '/'
+if hostMatch.group('termslash'):
+    host = host.rstrip('/')
 
 # Set up the session
 s = requests.Session()
@@ -63,8 +63,21 @@ try:
 except:
     sys.exit("Must have file %s with contents {'alias':USERNAME,'secret':PASSWORD}" % args.tokenFile)
 
+# Check connection
+url = host + '/data/JSESSION'
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    r = s.post(url)
+if not r.ok:
+    errMessage = "Could not connect."
+    if r.status_code == 403:
+        errMessage += "\nToken has expired. You must update manually."
+    else:
+        errMessage += "\n" + r.text
+    sys.exit("Status code {}\n{}".format(r.status_code,errMessage))
+
 # Get a new token
-url = host + 'data/services/tokens/issue'
+url = host + '/data/services/tokens/issue'
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     r = s.get(url)

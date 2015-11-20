@@ -6,7 +6,9 @@ anybar "white"
 
 cd ~/pstatus
 if [[ -n "$(ls *.txt)" ]]; then
+    mv ignorejobs.txt ignorejobs.txt.save
     rm *.txt
+    mv ignorejobs.txt.save ignorejobs.txt
 fi
 if [[ -n "$(ls *.json)" ]]; then
     rm *.json

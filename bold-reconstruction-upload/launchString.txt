@@ -1,0 +1,6 @@
+for file in $(ls */*/logs/*.log); do basename $file; grep nrglab $file | sort -u;  done
+i=6; while read fsid; do grep $fsid toProcess.batch${i}.txt; done < failed.batch${i}.txt >> toProcess.batch$((i+1)).txt
+
+
+i=19 # Last one finished
+((i++)); ./uploadBOLD.sh https://cnda.wustl.edu $UTOKEN $PTOKEN $i > >(tee batch${i}.log) 2> >(tee batch${i}.err >&2)

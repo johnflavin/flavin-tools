@@ -74,7 +74,10 @@ if not r.ok:
         errMessage += "\nToken has expired. You must update manually."
     else:
         errMessage += "\n" + r.text
-    sys.exit("Status code {}\n{}".format(r.status_code,errMessage))
+
+    mess = "Status code {}\n{}".format(r.status_code,errMessage)
+    print mess
+    sys.exit(mess)
 
 # Get a new token
 url = host + '/data/services/tokens/issue'

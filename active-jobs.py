@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import json, os, sys, requests, warnings
 
 host = 'https://cnda.wustl.edu'
@@ -24,8 +25,7 @@ if r.status_code == 200:
         json.dump(r.json(),f)
 
     for job in r.json()['ResultSet']['Result']:
-        if job.get('job_id'):
-            print job['job_id']
+        print "{}/{}".format(job.get('job_id'), job.get('workflow_id'))
 
     sys.exit(0)
 elif r.status_code == 403:

@@ -4,4 +4,4 @@
 # Uses http command from httpie https://github.com/httpie
 #  but you can swap it with curl or whatever you want to use for HTTP.
 
-http -o ifconfig.me/ip
+http -b ifconfig.me/ip

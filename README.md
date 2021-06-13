@@ -29,10 +29,6 @@ Send notifications to the [Pushover](https://pushover.net) API.
 
 I mostly use it to ping my phone at the end of some long-running process like transcoding a movie.
 
-This script is a little old, but it does work. It could probably use a once-over, though. For instance,
-right now it relies on having the API keys in a file. Today I'd probably keep those in the
-keychain and use the `security` command to get them out.
-
 ## homebrew-update.sh
 Update everything I have installed from homebrew.
 

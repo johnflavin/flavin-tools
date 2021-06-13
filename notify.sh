@@ -1,36 +1,25 @@
 #!/bin/bash
 
-die(){
-    echo >&2 "$@"
-    exit 1
-}
+usage_msg="Usage: notify \"title\" \"message\""
 
-# Get title and message
-title="$1"
-message="$2"
+# Get title and message from input args
+title="${1:?$usage_msg}"
+message="${2:?$usage_msg}"
 
-if [[ -z "${title}" || -z "${message}" ]]; then
-    die "Usage: notify \"title\" \"message\""
-fi
-
-# Get API and user tokens
-if [ ! -e ~/.notify ]; then
-    die "Set Pushover API_TOKEN and USER_TOKEN in ~/.notify"
-fi
-
-source ~/.notify
-
-if [[ -z "${API_TOKEN}" || -z "${USER_TOKEN}" ]]; then
-    die "Set Pushover API_TOKEN and USER_TOKEN in ~/.notify"
-fi
+# Get API and user tokens from keychain
+API_TOKEN=$(security find-generic-password -s pushover -a "api token" -w)
+: ${API_TOKEN:?Add pushover API token to keychain with 'security add-generic-password -s pushover -a "api token" -w <api token>'}
+USER_TOKEN=$(security find-generic-password -s pushover -a "user token" -w)
+: ${USER_TOKEN:?Add pushover user token to keychain with 'security add-generic-password -s pushover -a "user token" -w <user token>'}
 
 # POST to send notification
-req=$(curl -s -X POST --form token=${API_TOKEN} --form user=${USER_TOKEN} --form title="${title}" --form message="${message}" https://api.pushover.net/1/messages.json)
+req=$(http --form POST https://api.pushover.net/1/messages.json token=${API_TOKEN} user=${USER_TOKEN} title="${title}" message="${message}")
 
 # Check if it worked and exit
 status=$(jq .status <<< $req)
 if ((status==1)); then
     exit 0
 else
-    die "Failed to send notification: ${req}"
+    echo >&2 "Failed to send notification: ${req}"
+    exit 1
 fi

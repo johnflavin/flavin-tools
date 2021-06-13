@@ -23,3 +23,12 @@ After a bit of googling I found this question and answer: [Super User - How to i
 2. Wait for a few seconds, during which time you need to manually move the window in question. It uses that change of window position to identify which window you're interested in and print out info specific to it.
 
 That was enough for me to identify the window and its process. Given the process ID I was able to kill it and the window went away.
+
+## notify
+Send notifications to the [Pushover](https://pushover.net) API.
+
+I mostly use it to ping my phone at the end of some long-running process like transcoding a movie.
+
+This script is a little old, but it does work. It could probably use a once-over, though. For instance,
+right now it relies on having the API keys in a file. Today I'd probably keep those in the
+keychain and use the `security` command to get them out.

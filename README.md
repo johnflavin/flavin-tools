@@ -24,7 +24,7 @@ After a bit of googling I found this question and answer: [Super User - How to i
 
 That was enough for me to identify the window and its process. Given the process ID I was able to kill it and the window went away.
 
-## notify
+## notify.sh
 Send notifications to the [Pushover](https://pushover.net) API.
 
 I mostly use it to ping my phone at the end of some long-running process like transcoding a movie.

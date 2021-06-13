@@ -4,6 +4,15 @@ Scripts and stuff
 
 A lot of this is pretty old, from my previous job at WashU with the CNDA. I should probably organize that stuff.
 
+## my-ip.sh
+Find external IP address.
+
+Loads the website [ifconfig.me/ip](ifconfig.me/ip), which does nothing but returns the IP address
+of your request.
+
+My script uses the `http` command from [httpie](https://github.com/httpie)
+but you can swap it with `curl` or whatever CLI you like to use for HTTP.
+
 ## window-move.py
 
 This is a script I found on the Super User Stack Echange site. I was trying to solve a problem that my OS had opened a window where it was "Verifying" an application I was installing, but the verifying process was stuck. I didn't know how to close this window because I didn't know what process it belonged to.

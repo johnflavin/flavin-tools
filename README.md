@@ -32,3 +32,16 @@ I mostly use it to ping my phone at the end of some long-running process like tr
 This script is a little old, but it does work. It could probably use a once-over, though. For instance,
 right now it relies on having the API keys in a file. Today I'd probably keep those in the
 keychain and use the `security` command to get them out.
+
+## homebrew-update.sh
+Update everything I have installed from homebrew.
+
+I typically run this via a launch agent, which I have also included in the `LaunchAgents` directory.
+It runs every hour to keep everything up-to-date.
+
+### Known limitations
+The launch agent hard-codes the path to the script and the path to the output logs on my machine.
+It is certainly not directly applicable to anyone else.
+But it can easily be adapted to another environment.
+
+Perhaps one day I'll see if I can figure out a way to make those translatable elsewhere.

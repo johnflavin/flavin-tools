@@ -2,6 +2,16 @@
 
 Scripts and stuff
 
+## conda-develop.sh
+A replacement for the `conda develop` command that doesn't work.
+
+Reads a `meta.yaml` for its dependency requirements and installs
+them into a new environment.
+
+This is a pretty quick, rough implementation. It doesn't have a
+lot of the features one would expect from, like, an official 
+`conda develop` CLI. But it works for me so I'll just run with it.
+
 ## my-ip.sh
 Find external IP address.
 

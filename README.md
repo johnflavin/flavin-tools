@@ -2,6 +2,12 @@
 
 Scripts and stuff
 
+## 10-keychain.py
+An ipython startup script. (Named starting with `10` because
+it doesn't need to be particularly early in the startup sequence.)
+
+Defines a function for getting secrets from the keychain.
+
 ## conda-develop.sh
 A replacement for the `conda develop` command that doesn't work.
 

@@ -26,3 +26,7 @@ The plan is to store the password in the keychain. Set it with this:
 and have `SUDO_ASKPASS` retrieve it with this:
 
     security find-generic-password -a johnflavin -s homebrew-update -w
+
+...
+
+Actually I need to put that into a script and set `SUDO_ASKPASS` to the path to that script. It can't be an arbitrary command in a string.

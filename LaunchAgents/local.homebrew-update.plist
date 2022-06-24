@@ -26,5 +26,11 @@
         <string>/Users/johnflavin/Library/Logs/Homebrew/homebrew-update.log</string>
         <key>StandardErrorPath</key>
         <string>/Users/johnflavin/Library/Logs/Homebrew/homebrew-update.err</string>
+        <key>LowPriorityBackgroundIO</key>
+        <true/>
+        <key>LowPriorityIO</key>
+        <true/>
+        <key>ProcessType</key>
+        <string>Background</string>
     </dict>
 </plist>

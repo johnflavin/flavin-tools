@@ -2,6 +2,17 @@
 
 Scripts and stuff
 
+## set-up-k8s.sh
+Runs the CS kubernetes setup on a machine. All of this is very particular to my local directories and dev machines and so forth.
+But I wanted to check it in anyway, just in case I need to remember it later.
+
+First copies the CS k8s setup script(s) a script to a machine, which much be in a certain directory.
+Then runs a script over SSH on the dev machine which will:
+
+* install minikube as root
+* run minikube as tomcat
+* run the CS script(s) as tomcat
+
 ## sshl
 Short for "`ssh` login".
 

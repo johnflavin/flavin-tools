@@ -2,6 +2,9 @@
 
 Scripts and stuff
 
+## dropdb
+A fish function `dropdb.fish` and accompanying bash script `dropdb.sh`. The former runs locally, `rsync`s the latter to a dev stack, and runs it. The latter drops the dev stack's database and deletes its archive.
+
 ## mkAdmin.sh
 Pass the name of an XNAT user account. Output a `psql` script that, when run, will enable the user account and make it a site admin.
 

@@ -2,6 +2,13 @@
 
 Scripts and stuff
 
+## sshl
+Short for "`ssh` login".
+
+This script adds a couple steps to my typical `ssh` configuration for a dev stack which will switch to the `root` user and change directory to XNAT's home. I was doing this practically every time I `ssh`ed in and wanted it to be automatic.
+
+I could have accomplished this via ssh config instead of a function, and indeed that was my initial implementation. But including these steps in the config for a stack meant any automated `ssh` or `rsync` commands also did these steps which I didn't want. Rather than go back and change the automated scripts to add arguments that turn off these options from the config when I don't want them, I removed them from the config and added this function to set them when I do want them.
+
 ## dropdb
 A fish function `dropdb.fish` and accompanying bash script `dropdb.sh`. The former runs locally, `rsync`s the latter to a dev stack, and runs it. The latter drops the dev stack's database and deletes its archive.
 

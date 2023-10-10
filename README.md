@@ -5,10 +5,6 @@ Scripts and stuff
 ## la.fish
 Creates `la` alias for `ls -lA` in fish.
 
-## docker.fish
-Creates `docker` function for fish as an alias for `lima nerdctl`.
-This is what I have used as a replacement for docker.
-
 ## 10-keychain.py
 An ipython startup script. (Named starting with `10` because
 it doesn't need to be particularly early in the startup sequence.)

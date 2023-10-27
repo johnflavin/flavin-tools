@@ -2,6 +2,9 @@
 
 Scripts and stuff
 
+## mkAdmin.sh
+Pass the name of an XNAT user account. Output a `psql` script that, when run, will enable the user account and make it a site admin.
+
 ## pluginsync.fish
 Build a plugin xpl jar, `rsync` it to a specified dev stack, put it into the dev stack's plugins directory, and bounce tomcat.
 

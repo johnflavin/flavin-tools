@@ -2,6 +2,15 @@
 
 Scripts and stuff
 
+## pluginsync.fish
+Build a plugin xpl jar, `rsync` it to a specified dev stack, put it into the dev stack's plugins directory, and bounce tomcat.
+
+## cssync.fish
+Build the container service fat jar, `rsync` it to a specified dev stack, put it into the dev stack's plugins directory, and bounce tomcat.
+
+## xnatsync.fish
+Build the XNAT war, `rsync` it to a specified dev stack, put it into the dev stack's tomcat webapps root directory, and bounce tomcat.
+
 ## la.fish
 Creates `la` alias for `ls -lA` in fish.
 

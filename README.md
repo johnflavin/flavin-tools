@@ -24,6 +24,9 @@ Build the container service fat jar, `rsync` it to a specified dev stack, put it
 ## xnatsync.fish
 Build the XNAT war, `rsync` it to a specified dev stack, put it into the dev stack's tomcat webapps root directory, and bounce tomcat.
 
+## fish_ssh_agent.fish
+Starts ssh agent if not already started and configures environment.
+
 ## la.fish
 Creates `la` alias for `ls -lA` in fish.
 

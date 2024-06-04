@@ -2,6 +2,9 @@
 
 Scripts and stuff
 
+## safelink-extractor.py
+This takes the stupid "safelink" redirect URLs that you get on links in Outlook and gives back the original URL.
+
 ## set-up-k8s.sh
 Runs the CS kubernetes setup on a machine. All of this is very particular to my local directories and dev machines and so forth.
 But I wanted to check it in anyway, just in case I need to remember it later.

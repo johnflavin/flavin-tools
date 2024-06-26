@@ -41,9 +41,6 @@ Build the XNAT war, `rsync` it to a specified dev stack, put it into the dev sta
 ## fish_ssh_agent.fish
 Starts ssh agent if not already started and configures environment.
 
-## la.fish
-Creates `la` alias for `ls -lA` in fish.
-
 ## 10-keychain.py
 An ipython startup script. (Named starting with `10` because
 it doesn't need to be particularly early in the startup sequence.)

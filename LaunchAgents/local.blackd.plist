@@ -11,7 +11,10 @@
         <key>RunAtLoad</key>
         <true/>
         <key>KeepAlive</key>
-        <true/>
+        <dict>
+            <key>Crashed</key>
+            <false/>
+        </dict>
         <key>StandardOutPath</key>
         <string>/Users/jflavin/Library/Logs/LaunchAgents/blackd.log</string>
         <key>StandardErrorPath</key>

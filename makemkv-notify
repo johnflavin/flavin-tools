@@ -1,0 +1,19 @@
+#!/bin/bash
+
+LOG_FILE="${HOME}/MakeMKV_log.txt"
+LOG_SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+
+echo "Watching $LOG_FILE for MakeMKV completion..."
+
+while IFS= read -r line; do
+    if [[ "$line" == *"Copy complete"* ]]; then
+        titles=$(echo "$line" | grep -oE '[0-9]+ title' || echo "")
+        message="${titles:+$titles copied. }Rip finished."
+        notify "MakeMKV" "$message"
+        exit 0
+    fi
+    if [[ "$line" == *"failed"* || "$line" == *"Fatal"* ]]; then
+        notify "MakeMKV" "Rip failed: ${line}"
+        exit 1
+    fi
+done < <(tail -c +"$((LOG_SIZE + 1))" -f "$LOG_FILE")

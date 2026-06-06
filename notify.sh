@@ -13,7 +13,7 @@ USER_TOKEN=$(security find-generic-password -s pushover -a "user token" -w)
 : ${USER_TOKEN:?Add pushover user token to keychain with 'security add-generic-password -s pushover -a "user token" -w <user token>'}
 
 # POST to send notification
-req=$(http --form POST https://api.pushover.net/1/messages.json token=${API_TOKEN} user=${USER_TOKEN} title="${title}" message="${message}")
+req=$(http --ignore-stdin --form POST https://api.pushover.net/1/messages.json token=${API_TOKEN} user=${USER_TOKEN} title="${title}" message="${message}")
 
 # Check if it worked and exit
 status=$(jq .status <<< $req)

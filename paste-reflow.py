@@ -33,6 +33,7 @@ import json
 import re
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -80,11 +81,14 @@ def read_clipboard_html():
         ).stdout
     except Exception:
         return None
-    m = re.search(r"HTML([0-9A-Fa-f]+)", out)
+    # osascript wraps long output across lines, so the hex run can be broken by
+    # whitespace; grab everything up to the closing guillemet and strip it.
+    m = re.search(r"HTML([0-9A-Fa-f\s]+?)»", out) or re.search(r"HTML([0-9A-Fa-f\s]+)", out)
     if not m:
         return None
+    hex_str = re.sub(r"\s", "", m.group(1))
     try:
-        return bytes.fromhex(m.group(1)).decode("utf-8", "replace")
+        return bytes.fromhex(hex_str).decode("utf-8", "replace")
     except ValueError:
         return None
 
@@ -104,24 +108,52 @@ def recent_transcripts(n=TRANSCRIPT_SCAN_COUNT):
 
 
 def assistant_messages(path):
-    """Raw markdown of each assistant text block, newest first."""
+    """Raw markdown of each assistant text block, newest first.
+
+    Streams the file line-by-line (transcripts run to many MB) and skips the
+    cheap way past non-assistant lines before paying for json.loads -- most of a
+    session is user/tool_result/tool_use entries. We still buffer the matched
+    texts and reverse, since JSONL is forward-only and the caller wants newest
+    first."""
     msgs = []
     try:
-        lines = path.read_text(errors="replace").splitlines()
+        f = path.open(errors="replace")
     except OSError:
         return msgs
-    for line in lines:
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        if obj.get("type") != "assistant":
-            continue
-        for block in obj.get("message", {}).get("content", []) or []:
-            if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                msgs.append(block["text"])
+    with f:
+        for line in f:
+            if '"assistant"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("type") != "assistant":
+                continue
+            for block in obj.get("message", {}).get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                    msgs.append(block["text"])
     msgs.reverse()
     return msgs
+
+
+def _normalize(raw):
+    """Like _normalize_with_map but without the index map -- used for the
+    common no-match case, where building the parallel map would be wasted."""
+    norm = []
+    prev_space = False
+    for ch in raw:
+        if ch in INLINE_MD_CHARS:
+            continue
+        if ch.isspace():
+            if prev_space:
+                continue
+            norm.append(" ")
+            prev_space = True
+        else:
+            norm.append(ch.lower())
+            prev_space = False
+    return "".join(norm)
 
 
 def _normalize_with_map(raw):
@@ -152,7 +184,9 @@ def _normalize_needle(text):
 
 
 def _balanced(s):
-    return s.count("*") % 2 == 0 and s.count("`") % 2 == 0
+    # Every inline-markdown marker we expand over at slice boundaries must come
+    # in pairs, or we'd return a slice with a dangling */`/_/~ marker.
+    return all(s.count(ch) % 2 == 0 for ch in INLINE_MD_CHARS)
 
 
 def recover_from_transcripts(needle_text):
@@ -163,10 +197,10 @@ def recover_from_transcripts(needle_text):
         return None
     for path in recent_transcripts():
         for raw in assistant_messages(path):
-            norm, idx = _normalize_with_map(raw)
-            pos = norm.find(needle)
+            pos = _normalize(raw).find(needle)
             if pos == -1:
                 continue
+            _, idx = _normalize_with_map(raw)  # build the map only on a hit
             start = idx[pos]
             end = idx[pos + len(needle) - 1] + 1
             # Expand over markers sitting right at the boundary so we don't
@@ -386,13 +420,16 @@ def acquire(args):
             explicit = piped
 
     clip_text = read_clipboard_text()
-    clip_html = read_clipboard_html()
 
+    # read_clipboard_html() shells out to osascript (slow), so only pay for it on
+    # the paths that actually use the result.
     if explicit is None:
-        return clip_text, clip_html  # hotkey path: act on the live clipboard
-    if clip_html and explicit.strip() == (clip_text or "").strip():
-        return explicit, clip_html   # same content -> the HTML really is for it
-    return explicit, None            # history/selection text -> no matching HTML
+        return clip_text, read_clipboard_html()  # hotkey path: act on live clipboard
+    if explicit.strip() == (clip_text or "").strip():
+        clip_html = read_clipboard_html()
+        if clip_html:
+            return explicit, clip_html   # same content -> the HTML really is for it
+    return explicit, None                # history/selection text -> no matching HTML
 
 
 def build_markdown(needle_text, html, use_transcript=True):
@@ -407,13 +444,230 @@ def build_markdown(needle_text, html, use_transcript=True):
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Tests  (run with `paste-reflow.py --test`)
+#
+# Self-contained stdlib unittest -- the repo has no test runner and the script
+# ships as a single file, so the tests live here too. They cover the pure
+# transform logic plus the parsing inside the clipboard/transcript I/O (by
+# faking subprocess and using temp files), but not the live clipboard itself.
+# ---------------------------------------------------------------------------
+
+def _run_tests():
+    import unittest
+    suite = unittest.defaultTestLoader.loadTestsFromName(__name__)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return 0 if result.wasSuccessful() else 1
+
+
+try:
+    import unittest as _unittest
+except ImportError:  # pragma: no cover
+    _unittest = None
+
+if _unittest is not None:
+    import contextlib
+    import tempfile
+
+    @contextlib.contextmanager
+    def _patched(obj, name, value):
+        """Temporarily set obj.name = value for the duration of the block."""
+        sentinel = object()
+        old = getattr(obj, name, sentinel)
+        setattr(obj, name, value)
+        try:
+            yield
+        finally:
+            if old is sentinel:
+                delattr(obj, name)
+            else:
+                setattr(obj, name, old)
+
+    def _fake_run(stdout):
+        """A subprocess.run replacement that returns a fixed stdout."""
+        def run(*a, **k):
+            return types.SimpleNamespace(stdout=stdout)
+        return run
+
+    class NormalizeTests(_unittest.TestCase):
+        def test_drops_md_chars_lowercases_collapses(self):
+            self.assertEqual(_normalize("**Hi**   _There_"), "hi there")
+
+        def test_map_matches_normalize_string(self):
+            raw = "A  **bold**\n\nword"
+            norm, idx = _normalize_with_map(raw)
+            self.assertEqual(norm, _normalize(raw))
+            self.assertEqual(len(norm), len(idx))
+
+        def test_index_map_points_at_source(self):
+            raw = "x **yz**"
+            norm, idx = _normalize_with_map(raw)
+            pos = norm.find("yz")
+            self.assertEqual(raw[idx[pos]], "y")
+
+        def test_needle_normalization(self):
+            self.assertEqual(_normalize_needle("  Foo\n  Bar  "), "foo bar")
+
+    class BalancedTests(_unittest.TestCase):
+        def test_all_markers_must_pair(self):
+            # Regression: _balanced once checked only * and `.
+            self.assertTrue(_balanced("a *b* `c` _d_ ~e~"))
+            self.assertFalse(_balanced("a _b"))
+            self.assertFalse(_balanced("a ~b"))
+            self.assertFalse(_balanced("a `b"))
+            self.assertFalse(_balanced("a *b"))
+
+    class StyleTests(_unittest.TestCase):
+        def test_bold_weight(self):
+            self.assertIn("bold", _style_from_css("font-weight: bold"))
+            self.assertIn("bold", _style_from_css("font-weight:700"))
+            self.assertNotIn("bold", _style_from_css("font-weight:400"))
+
+        def test_italic(self):
+            self.assertIn("italic", _style_from_css("font-style: italic"))
+
+        def test_color_is_code_but_not_background(self):
+            self.assertIn("code", _style_from_css("color:#abc"))
+            self.assertNotIn("code", _style_from_css("background-color:#abc"))
+
+    class HtmlReconstructionTests(_unittest.TestCase):
+        def test_bold_and_code_spans(self):
+            html = ('<span style="font-weight:bold">Bold</span> and '
+                    '<span style="color:#abc">code</span> here.')
+            self.assertEqual(chars_to_markdown(chars_from_html(html)),
+                             "**Bold** and `code` here.")
+
+        def test_br_is_soft_wrap_and_keeps_style(self):
+            # A <br> is a TUI line wrap -> collapses to a space, and the bold
+            # span survives across it (i.e. the stack isn't corrupted).
+            html = ('<span style="font-weight:bold">a<br>b</span>')
+            md = chars_to_markdown(chars_from_html(html))
+            self.assertEqual(md, "**a b**")
+
+    class ReflowTests(_unittest.TestCase):
+        def test_soft_wrap_joins_paragraphs_split(self):
+            md = chars_to_markdown(chars_from_plain(
+                "This is a soft\nwrapped line.\n\nSecond para.\n"))
+            self.assertEqual(md, "This is a soft wrapped line.\n\nSecond para.")
+
+        def test_list_items_keep_their_breaks(self):
+            md = chars_to_markdown(chars_from_plain("- one\n- two\n- three\n"))
+            self.assertEqual(md, "- one\n- two\n- three")
+
+        def test_strips_tui_indent(self):
+            md = chars_to_markdown(chars_from_plain("  indented line\n"))
+            self.assertEqual(md, "indented line")
+
+    class TranscriptTests(_unittest.TestCase):
+        def _write_transcript(self, msgs):
+            d = tempfile.mkdtemp()
+            p = Path(d) / "session.jsonl"
+            recs = [{"type": "user", "message": {"content": "noise"}}]
+            for text in msgs:
+                recs.append({"type": "assistant",
+                             "message": {"content": [{"type": "text", "text": text}]}})
+            p.write_text("\n".join(json.dumps(r) for r in recs))
+            return p
+
+        def test_assistant_messages_streams_newest_first(self):
+            p = self._write_transcript(["first", "second"])
+            self.assertEqual(assistant_messages(p), ["second", "first"])
+
+        def test_recovers_original_markdown(self):
+            p = self._write_transcript(["Here is **bold** and `code` to find."])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("bold and code to find")
+            self.assertEqual(got, "**bold** and `code` to find")
+
+        def test_short_needle_rejected(self):
+            p = self._write_transcript(["short text here"])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                self.assertIsNone(recover_from_transcripts("short"))  # < MIN_MATCH_LEN
+
+        def test_no_match_returns_none(self):
+            p = self._write_transcript(["completely different content"])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                self.assertIsNone(recover_from_transcripts("absent needle phrase"))
+
+    class ClipboardParseTests(_unittest.TestCase):
+        def test_html_hex_decodes(self):
+            payload = "<b>hi</b>".encode("utf-8").hex().upper()
+            out = f"«data HTML{payload}»"
+            with _patched(subprocess, "run", _fake_run(out)):
+                self.assertEqual(read_clipboard_html(), "<b>hi</b>")
+
+        def test_html_hex_survives_line_wrapping(self):
+            # Regression: osascript wraps long output; the hex run gets split by
+            # whitespace and must still decode.
+            payload = "<b>hi</b>".encode("utf-8").hex().upper()
+            wrapped = "«data HTML" + payload[:4] + "\n  " + payload[4:] + "»"
+            with _patched(subprocess, "run", _fake_run(wrapped)):
+                self.assertEqual(read_clipboard_html(), "<b>hi</b>")
+
+        def test_no_html_returns_none(self):
+            with _patched(subprocess, "run", _fake_run("«class TEXT»")):
+                self.assertIsNone(read_clipboard_html())
+
+    class AcquireTests(_unittest.TestCase):
+        def _args(self, **kw):
+            defaults = {"html_file": None, "text": None}
+            defaults.update(kw)
+            return types.SimpleNamespace(**defaults)
+
+        def test_history_path_skips_osascript(self):
+            # Regression: read_clipboard_html (slow osascript) must not run when
+            # explicit text doesn't match the clipboard.
+            calls = {"html": 0}
+
+            def counting_html():
+                calls["html"] += 1
+                return "<b>x</b>"
+
+            with _patched(sys.modules[__name__], "read_clipboard_text", lambda: "different"), \
+                 _patched(sys.modules[__name__], "read_clipboard_html", counting_html):
+                needle, html = acquire(self._args(text="explicit text input here"))
+            self.assertEqual(needle, "explicit text input here")
+            self.assertIsNone(html)
+            self.assertEqual(calls["html"], 0)
+
+        def test_matching_clipboard_keeps_html(self):
+            with _patched(sys.modules[__name__], "read_clipboard_text", lambda: "same text"), \
+                 _patched(sys.modules[__name__], "read_clipboard_html", lambda: "<b>same</b>"):
+                needle, html = acquire(self._args(text="same text"))
+            self.assertEqual((needle, html), ("same text", "<b>same</b>"))
+
+    class BuildMarkdownTests(_unittest.TestCase):
+        def test_transcript_takes_priority(self):
+            with _patched(sys.modules[__name__], "recover_from_transcripts",
+                          lambda t: "RECOVERED"):
+                self.assertEqual(build_markdown("needle", "<b>x</b>"), "RECOVERED")
+
+        def test_html_fallback_when_no_transcript(self):
+            self.assertEqual(
+                build_markdown("Bold here.", '<span style="font-weight:bold">Bold</span> here.',
+                               use_transcript=False),
+                "**Bold** here.")
+
+        def test_plain_fallback(self):
+            self.assertEqual(build_markdown("plain words", None, use_transcript=False),
+                             "plain words")
+
+    class QuoteTests(_unittest.TestCase):
+        def test_callout_wrapping(self):
+            self.assertEqual(to_quote("a\n\nb"), "> [!quote]\n> a\n>\n> b")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Reformat copied Claude Code output to markdown.")
     ap.add_argument("text", nargs="?", help="explicit plain-text input (else stdin, else live clipboard)")
     ap.add_argument("--quote", action="store_true", help="wrap as an Obsidian > [!quote] callout")
     ap.add_argument("--no-transcript", action="store_true", help="skip A3 transcript recovery")
     ap.add_argument("--html-file", help="read the HTML flavor from a file (testing)")
+    ap.add_argument("--test", action="store_true", help="run the built-in unit tests and exit")
     args = ap.parse_args()
+
+    if args.test:
+        sys.exit(_run_tests())
 
     needle_text, html = acquire(args)
     md = build_markdown(needle_text, html, use_transcript=not args.no_transcript)

@@ -14,7 +14,12 @@ Ghostty writes) and produces markdown through three tiers, best-first:
 1. **Transcript recovery (high fidelity).** Uses the copied text as a search needle
    against recent Claude Code session transcripts (`~/.claude/projects/*/*.jsonl`).
    On a confident match it returns the *original* source markdown — real backticks,
-   links, code fences, lists — exactly as Claude emitted it.
+   links, code fences, lists — exactly as Claude emitted it. Matching is
+   fence-aware: code-fence delimiter lines (and their ` ```bash ` info strings)
+   render to nothing in the TUI so they're ignored when matching, `_ * ~` are
+   treated as literal inside a fence (not markup), and a match landing inside a
+   block is widened to carry the whole fence — so multi-line code blocks come
+   back intact.
 2. **HTML reconstruction (fallback).** No transcript match? Rebuilds markdown from the
    clipboard HTML: bold from `font-weight`, inline code from any colored span (the TUI
    only colors accented text, so this is theme-independent), then reflows the

@@ -46,6 +46,11 @@ LIST_MARKER = re.compile(r"^\s*([-*+]\s|\d+[.)]\s)")
 # Markdown punctuation dropped when normalizing source text for matching.
 INLINE_MD_CHARS = set("*`_~")
 
+# A code-fence delimiter line: optional indent, 3+ backticks/tildes, then an
+# optional info string (e.g. ```bash). The TUI renders neither the fence nor the
+# info string, so for matching purposes these lines contribute nothing.
+FENCE_LINE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*$")
+
 # How many of the most-recently-touched transcripts to search.
 TRANSCRIPT_SCAN_COUNT = 3
 
@@ -137,46 +142,109 @@ def assistant_messages(path):
     return msgs
 
 
-def _normalize(raw):
-    """Like _normalize_with_map but without the index map -- used for the
-    common no-match case, where building the parallel map would be wasted."""
+def _normalize_core(raw, want_map):
+    """Normalize `raw` so it lines up with the TUI-rendered text we search for.
+
+    Lowercases, collapses whitespace runs to single spaces, and -- crucially for
+    code blocks -- works fence-aware:
+
+      * Fence-delimiter lines (``` / ~~~, with any info string) render to nothing
+        in the TUI, so we emit nothing for them. This also stops the info string
+        (the `bash` in ```bash) from leaking in as a stray word.
+      * Inside a fenced block we DON'T drop `* ` _ ~`: there they're literal code
+        characters that the TUI renders verbatim, so the needle keeps them too.
+        Outside a fence they're emphasis/code markup the TUI strips, so we strip
+        them to match.
+
+    When want_map is True, also returns index_map where index_map[i] is the
+    offset in `raw` that produced normalized char i (used to slice the original
+    markdown back out on a hit)."""
     norm = []
+    idx = [] if want_map else None
     prev_space = False
-    for ch in raw:
-        if ch in INLINE_MD_CHARS:
-            continue
-        if ch.isspace():
-            if prev_space:
-                continue
-            norm.append(" ")
-            prev_space = True
+    in_fence = False
+    pos, n = 0, len(raw)
+    while pos <= n:
+        nl = raw.find("\n", pos)
+        line_end = n if nl == -1 else nl
+        if FENCE_LINE.match(raw[pos:line_end]):
+            in_fence = not in_fence  # delimiter line: toggle, emit nothing
         else:
-            norm.append(ch.lower())
-            prev_space = False
-    return "".join(norm)
+            for off in range(pos, line_end):
+                ch = raw[off]
+                if not in_fence and ch in INLINE_MD_CHARS:
+                    continue
+                if ch.isspace():
+                    if prev_space:
+                        continue
+                    norm.append(" ")
+                    if want_map:
+                        idx.append(off)
+                    prev_space = True
+                else:
+                    norm.append(ch.lower())
+                    if want_map:
+                        idx.append(off)
+                    prev_space = False
+        if nl == -1:
+            break
+        # The line break between lines is whitespace -> a single space.
+        if norm and not prev_space:
+            norm.append(" ")
+            if want_map:
+                idx.append(nl)
+            prev_space = True
+        pos = nl + 1
+    text = "".join(norm)
+    return (text, idx) if want_map else text
+
+
+def _normalize(raw):
+    """Normalized text only -- used for the common no-match case, where building
+    the parallel index map would be wasted."""
+    return _normalize_core(raw, want_map=False)
 
 
 def _normalize_with_map(raw):
-    """Return (normalized_text, index_map) where index_map[i] is the offset in
-    `raw` that produced normalized char i. Drops inline markdown punctuation,
-    lowercases, and collapses whitespace runs to single spaces."""
-    norm = []
-    idx = []
-    prev_space = False
-    for i, ch in enumerate(raw):
-        if ch in INLINE_MD_CHARS:
-            continue
-        if ch.isspace():
-            if prev_space:
-                continue
-            norm.append(" ")
-            idx.append(i)
-            prev_space = True
-        else:
-            norm.append(ch.lower())
-            idx.append(i)
-            prev_space = False
-    return "".join(norm), idx
+    """(normalized_text, index_map); see _normalize_core. Built only on a hit."""
+    return _normalize_core(raw, want_map=True)
+
+
+def _fence_blocks(raw):
+    """Char ranges (open_start, close_end) of complete fenced blocks in `raw`.
+
+    open_start is the offset of the opening fence line; close_end is the offset
+    just past the closing fence line. An unterminated fence runs to end-of-text.
+    Used to snap a match boundary that lands inside a block out to the whole
+    block, so the recovered slice never has a dangling ``` fence."""
+    blocks = []
+    open_start = None
+    pos, n = 0, len(raw)
+    while pos <= n:
+        nl = raw.find("\n", pos)
+        line_end = n if nl == -1 else nl
+        if FENCE_LINE.match(raw[pos:line_end]):
+            if open_start is None:
+                open_start = pos
+            else:
+                blocks.append((open_start, line_end))
+                open_start = None
+        if nl == -1:
+            break
+        pos = nl + 1
+    if open_start is not None:
+        blocks.append((open_start, n))
+    return blocks
+
+
+def _snap_to_fences(start, end, blocks):
+    """If start/end land inside a fenced block, widen them to the whole block."""
+    for bs, be in blocks:
+        if bs <= start < be:
+            start = bs
+        if bs < end <= be:
+            end = be
+    return start, end
 
 
 def _normalize_needle(text):
@@ -185,8 +253,17 @@ def _normalize_needle(text):
 
 def _balanced(s):
     # Every inline-markdown marker we expand over at slice boundaries must come
-    # in pairs, or we'd return a slice with a dangling */`/_/~ marker.
-    return all(s.count(ch) % 2 == 0 for ch in INLINE_MD_CHARS)
+    # in pairs, or we'd return a slice with a dangling */`/_/~ marker. Markers
+    # INSIDE a fenced block are literal code, not markup, so they may be odd --
+    # strip fenced regions out before counting.
+    outside = []
+    prev = 0
+    for bs, be in _fence_blocks(s):
+        outside.append(s[prev:bs])
+        prev = be
+    outside.append(s[prev:])
+    rest = "".join(outside)
+    return all(rest.count(ch) % 2 == 0 for ch in INLINE_MD_CHARS)
 
 
 def recover_from_transcripts(needle_text):
@@ -203,6 +280,9 @@ def recover_from_transcripts(needle_text):
             _, idx = _normalize_with_map(raw)  # build the map only on a hit
             start = idx[pos]
             end = idx[pos + len(needle) - 1] + 1
+            # A match that lands inside a code fence must carry the whole fence,
+            # or we'd return a block with a dangling ``` delimiter.
+            start, end = _snap_to_fences(start, end, _fence_blocks(raw))
             # Expand over markers sitting right at the boundary so we don't
             # slice through the middle of a **bold** or `code` span.
             while start > 0 and raw[start - 1] in INLINE_MD_CHARS:
@@ -588,6 +668,53 @@ if _unittest is not None:
             p = self._write_transcript(["completely different content"])
             with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
                 self.assertIsNone(recover_from_transcripts("absent needle phrase"))
+
+        def test_recovers_fenced_code_block(self):
+            # The TUI renders neither the ```python fence nor its info string, and
+            # keeps the snake_case underscore literal -- so the needle is just the
+            # rendered code. Recovery must return the block WITH its fences.
+            src = "Run this:\n\n```python\nfoo_bar = compute_value(x)\n```\n\nDone."
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("foo_bar = compute_value(x)")
+            self.assertEqual(got, "```python\nfoo_bar = compute_value(x)\n```")
+
+        def test_recovers_across_blocks_and_prose(self):
+            # A needle spanning code, interleaved prose, and a second code block
+            # comes back as the exact source -- both fences intact, prose between.
+            src = ("```bash\ncd $MY_DIR && ls\n```\n\nThen:\n"
+                   "```bash\necho done\n```")
+            p = self._write_transcript([src])
+            needle = "cd $MY_DIR && ls\nThen:\necho done"  # as the TUI renders it
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts(needle)
+            self.assertEqual(got, src)
+
+    class FenceNormalizeTests(_unittest.TestCase):
+        def test_fence_lines_and_info_string_drop_out(self):
+            # ```bash renders to nothing -- no stray "bash" in the normalized text.
+            self.assertEqual(_normalize("a\n```bash\ncode\n```\nb"), "a code b")
+
+        def test_md_chars_kept_inside_fence(self):
+            # Inside a fence, _ * ~ ` are literal code, not markup.
+            self.assertIn("foo_bar", _normalize("```\nfoo_bar\n```"))
+            # ...but stripped in prose, as before.
+            self.assertEqual(_normalize("**hi**"), "hi")
+
+        def test_map_matches_normalize_with_fences(self):
+            raw = "x\n```py\na_b = 1\n```\ny"
+            norm, idx = _normalize_with_map(raw)
+            self.assertEqual(norm, _normalize(raw))
+            self.assertEqual(len(norm), len(idx))
+            self.assertEqual(raw[idx[norm.find("a_b")]], "a")
+
+        def test_fence_blocks_and_snap(self):
+            raw = "```\nABCDE\n```"  # block spans the whole string
+            blocks = _fence_blocks(raw)
+            self.assertEqual(len(blocks), 1)
+            # A boundary inside the content widens out to the full block.
+            inner = raw.index("ABCDE")
+            self.assertEqual(_snap_to_fences(inner, inner + 3, blocks), (0, len(raw)))
 
     class ClipboardParseTests(_unittest.TestCase):
         def test_html_hex_decodes(self):

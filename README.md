@@ -12,14 +12,18 @@ It reads the clipboard (both the plain text and the styled `public.html` flavor 
 Ghostty writes) and produces markdown through three tiers, best-first:
 
 1. **Transcript recovery (high fidelity).** Uses the copied text as a search needle
-   against recent Claude Code session transcripts (`~/.claude/projects/*/*.jsonl`).
-   On a confident match it returns the *original* source markdown — real backticks,
-   links, code fences, lists — exactly as Claude emitted it. Matching is
+   against recent Claude Code session transcripts (`~/.claude/projects/*/*.jsonl`) —
+   the 10 most-recently-touched by default (`--scan-depth N` to look deeper, e.g.
+   when the source session scrolled out of range behind several parallel worktree
+   sessions). On a confident match it returns the *original* source markdown — real
+   backticks, links, code fences, lists — exactly as Claude emitted it. Matching is
    fence-aware: code-fence delimiter lines (and their ` ```bash ` info strings)
-   render to nothing in the TUI so they're ignored when matching, `_ * ~` are
-   treated as literal inside a fence (not markup), and a match landing inside a
-   block is widened to carry the whole fence — so multi-line code blocks come
-   back intact.
+   render to nothing in the TUI so they're ignored when matching; `_ * ~` are
+   literal inside a fence or an inline `code` span; emphasis markup (`*`, `_`, and a
+   `~~` strikethrough pair) is stripped so it lines up with the TUI, but a lone `~`
+   stays literal ("~50" is text, not strikethrough); and a match landing inside a
+   block is widened to carry the whole fence — so multi-line code blocks come back
+   intact.
 2. **HTML reconstruction (fallback).** No transcript match? Rebuilds markdown from the
    clipboard HTML: bold from `font-weight`, inline code from any colored span (the TUI
    only colors accented text, so this is theme-independent), then reflows the
@@ -29,7 +33,8 @@ Ghostty writes) and produces markdown through three tiers, best-first:
    plain text: strips the 2-space indent, collapses soft-wrapped single newlines into
    spaces, and keeps paragraph and list breaks.
 
-Pass `--quote` to wrap the result in an Obsidian `> [!quote]` callout.
+Pass `--quote` to wrap the result in an Obsidian `> [!quote]` callout, `--scan-depth
+N` to search deeper into transcript history, or `--no-transcript` to skip tier 1.
 
 Input is the live clipboard by default, or an explicit string as an argument / on
 stdin (handy for an Alfred Universal Action against a clipboard-history entry).

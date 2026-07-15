@@ -29,6 +29,7 @@ guts can be swapped to pyobjc (NSPasteboard) later without touching anything els
 """
 
 import argparse
+import itertools
 import json
 import re
 import subprocess
@@ -43,7 +44,9 @@ from pathlib import Path
 # A line is a list item if, after indent-stripping, it starts like one of these.
 LIST_MARKER = re.compile(r"^\s*([-*+]\s|\d+[.)]\s)")
 
-# Markdown punctuation dropped when normalizing source text for matching.
+# Markdown punctuation that may be markup at a slice boundary. `*` `_` and (in
+# pairs) `~` are emphasis/strikethrough the TUI strips; backticks delimit code.
+# NB: a *lone* `~` is literal ("~50"), not strikethrough -- see _normalize_core.
 INLINE_MD_CHARS = set("*`_~")
 
 # A code-fence delimiter line: optional indent, 3+ backticks/tildes, then an
@@ -51,8 +54,11 @@ INLINE_MD_CHARS = set("*`_~")
 # info string, so for matching purposes these lines contribute nothing.
 FENCE_LINE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*$")
 
-# How many of the most-recently-touched transcripts to search.
-TRANSCRIPT_SCAN_COUNT = 3
+# How many of the most-recently-touched transcripts to search by default. Bumped
+# 3 -> 10 so a source session doesn't fall out of range when several worktree/CC
+# sessions are active in parallel (the case that broke recovery). Transcripts are
+# streamed and short-circuited, so scanning more is cheap; --scan-depth overrides.
+TRANSCRIPT_SCAN_COUNT = 10
 
 # Don't trust a transcript match shorter than this (too easy to false-positive).
 MIN_MATCH_LEN = 8
@@ -142,19 +148,35 @@ def assistant_messages(path):
     return msgs
 
 
-def _normalize_core(raw, want_map):
+def _normalize_core(raw, want_map, emit_labels=False):
     """Normalize `raw` so it lines up with the TUI-rendered text we search for.
 
     Lowercases, collapses whitespace runs to single spaces, and -- crucially for
-    code blocks -- works fence-aware:
+    code -- works fence- and inline-code-aware:
 
       * Fence-delimiter lines (``` / ~~~, with any info string) render to nothing
         in the TUI, so we emit nothing for them. This also stops the info string
-        (the `bash` in ```bash) from leaking in as a stray word.
+        (the `bash` in ```bash) from leaking in as a stray word. EXCEPTION,
+        controlled by emit_labels: an OPENING fence's info string may instead be
+        emitted as a word, because some blocks render their language as a visible
+        label above the code that lands in a copied selection. Whether a given
+        block shows its label is inconsistent (a recognized, syntax-highlighted
+        language like ```sql tends not to; an unrecognized one like ```fish
+        does), and a single message can mix both -- so emit_labels is per-fence:
+        False/empty -> emit no labels; True -> emit every opening fence's label;
+        a set of ints -> emit only the opening fences whose 0-based document
+        order is in the set. The closing fence has no info string, emits nothing.
       * Inside a fenced block we DON'T drop `* ` _ ~`: there they're literal code
         characters that the TUI renders verbatim, so the needle keeps them too.
-        Outside a fence they're emphasis/code markup the TUI strips, so we strip
-        them to match.
+      * Inside an inline `code` span (single backticks) the same holds: the TUI
+        renders the span's contents literally -- underscores and all -- so a
+        needle copied from the TUI keeps e.g. `to_date`'s underscore. We drop the
+        backtick delimiters (the TUI shows no backticks) but keep `* _ ~` inside.
+        Outside code, `*` and `_` are emphasis the TUI strips, so we strip them to
+        match; `~` is stripped only as part of a `~~` strikethrough pair, since a
+        lone `~` (e.g. "~50", "approximately") is literal text the TUI shows
+        verbatim. (Inline code can't span physical lines, so the in-code state
+        resets at every line break.)
 
     When want_map is True, also returns index_map where index_map[i] is the
     offset in `raw` that produced normalized char i (used to slice the original
@@ -163,29 +185,70 @@ def _normalize_core(raw, want_map):
     idx = [] if want_map else None
     prev_space = False
     in_fence = False
+    fence_ord = 0  # 0-based index of the opening fence we're at, in doc order
     pos, n = 0, len(raw)
+
+    def _append(ch, off):
+        nonlocal prev_space
+        if ch.isspace():
+            if prev_space:
+                return
+            norm.append(" ")
+            prev_space = True
+        else:
+            norm.append(ch.lower())
+            prev_space = False
+        if want_map:
+            idx.append(off)
+
     while pos <= n:
         nl = raw.find("\n", pos)
         line_end = n if nl == -1 else nl
-        if FENCE_LINE.match(raw[pos:line_end]):
-            in_fence = not in_fence  # delimiter line: toggle, emit nothing
+        fence = FENCE_LINE.match(raw[pos:line_end])
+        if fence:
+            opening = not in_fence
+            in_fence = not in_fence  # delimiter line: toggle
+            if opening:
+                # The info string follows the ``` / ~~~ run; the TUI may show it
+                # as the block's language label, so emit it as a word when this
+                # fence is selected by emit_labels.
+                if emit_labels is True:
+                    emit_this = True
+                elif emit_labels:  # a set of opening-fence ordinals
+                    emit_this = fence_ord in emit_labels
+                else:  # False or empty set
+                    emit_this = False
+                if emit_this:
+                    for off in range(pos + fence.end(1), line_end):
+                        _append(raw[off], off)
+                fence_ord += 1
         else:
+            in_code = False  # inline code never spans a physical line
             for off in range(pos, line_end):
                 ch = raw[off]
-                if not in_fence and ch in INLINE_MD_CHARS:
-                    continue
-                if ch.isspace():
-                    if prev_space:
+                if not in_fence:
+                    if ch == "`":
+                        in_code = not in_code  # inline-code delimiter: drop it
                         continue
-                    norm.append(" ")
-                    if want_map:
-                        idx.append(off)
-                    prev_space = True
-                else:
-                    norm.append(ch.lower())
-                    if want_map:
-                        idx.append(off)
-                    prev_space = False
+                    if not in_code:
+                        if ch == "~":
+                            # Strikethrough is a matched ~~ pair; a lone ~ is
+                            # literal text the TUI shows verbatim (e.g. "~50"), so
+                            # keep it. Drop a ~ only within a ~~ run.
+                            if (off + 1 < line_end and raw[off + 1] == "~") or \
+                               (off > pos and raw[off - 1] == "~"):
+                                continue
+                        elif ch == "_":
+                            # An intraword underscore (word_word) is literal in
+                            # CommonMark -- it can't open or close emphasis -- so
+                            # the TUI shows it verbatim (work_mem, snake_case).
+                            # Keep it; strip only a flanking _ that is emphasis.
+                            if not (off > pos and raw[off - 1].isalnum()
+                                    and off + 1 < line_end and raw[off + 1].isalnum()):
+                                continue
+                        elif ch in INLINE_MD_CHARS:
+                            continue  # * emphasis the TUI renders away
+                _append(ch, off)
         if nl == -1:
             break
         # The line break between lines is whitespace -> a single space.
@@ -199,15 +262,64 @@ def _normalize_core(raw, want_map):
     return (text, idx) if want_map else text
 
 
-def _normalize(raw):
+def _normalize(raw, emit_labels=False):
     """Normalized text only -- used for the common no-match case, where building
     the parallel index map would be wasted."""
-    return _normalize_core(raw, want_map=False)
+    return _normalize_core(raw, want_map=False, emit_labels=emit_labels)
 
 
-def _normalize_with_map(raw):
+def _normalize_with_map(raw, emit_labels=False):
     """(normalized_text, index_map); see _normalize_core. Built only on a hit."""
-    return _normalize_core(raw, want_map=True)
+    return _normalize_core(raw, want_map=True, emit_labels=emit_labels)
+
+
+def _labeled_fence_ordinals(raw):
+    """0-based doc-order indices of the opening fences that carry a non-empty
+    info string (a language label). Only these can differ between the label-on
+    and label-off normalizations, so recovery enumerates over just this set."""
+    ords = []
+    ordinal = 0
+    in_fence = False
+    pos, n = 0, len(raw)
+    while pos <= n:
+        nl = raw.find("\n", pos)
+        line_end = n if nl == -1 else nl
+        m = FENCE_LINE.match(raw[pos:line_end])
+        if m:
+            if not in_fence:  # opening fence
+                if raw[pos + m.end(1):line_end].strip():
+                    ords.append(ordinal)
+                ordinal += 1
+            in_fence = not in_fence
+        if nl == -1:
+            break
+        pos = nl + 1
+    return ords
+
+
+# Cap on labeled fences we enumerate all 2^k subsets of; beyond it we try only
+# the two extremes (no labels / all labels). A message with this many labeled
+# code blocks in one selection is pathological; the cap bounds the blow-up.
+MAX_LABEL_ENUM = 12
+
+
+def _label_combos(raw):
+    """Yield emit_labels sets to try, cheapest/most-likely first: no labels,
+    then (only if the message has labeled fences) every non-empty subset of
+    them. Lazily computes the fence set so a fence-free message pays nothing
+    beyond the first (empty) yield."""
+    yield frozenset()
+    if "```" not in raw and "~~~" not in raw:
+        return
+    labeled = _labeled_fence_ordinals(raw)
+    if not labeled:
+        return
+    if len(labeled) > MAX_LABEL_ENUM:
+        yield frozenset(labeled)  # too many to enumerate: try the all-on extreme
+        return
+    for r in range(1, len(labeled) + 1):
+        for combo in itertools.combinations(labeled, r):
+            yield frozenset(combo)
 
 
 def _fence_blocks(raw):
@@ -263,35 +375,87 @@ def _balanced(s):
         prev = be
     outside.append(s[prev:])
     rest = "".join(outside)
-    return all(rest.count(ch) % 2 == 0 for ch in INLINE_MD_CHARS)
+    # Walk what's left tracking inline-code spans the same way _normalize_core
+    # does: `_ * ~` inside a `code` span are literal, so they don't need to
+    # pair; only the backticks and the emphasis markers outside code do. `~` is
+    # special: a lone one is literal ("~50"), so only a `~~` strikethrough run is
+    # a delimiter -- we require those runs to pair but never reject on a lone ~.
+    # `_` is likewise special: an intraword underscore (word_word) is literal in
+    # CommonMark ("work_mem"), so it doesn't pair -- only a flanking _ does.
+    # In-code state resets at line breaks (inline code is single-line).
+    counts = {"*": 0, "_": 0, "`": 0}
+    tilde_runs = 0  # runs of >=2 tildes: strikethrough delimiters, must pair
+    in_code = False
+    i, m = 0, len(rest)
+    while i < m:
+        ch = rest[i]
+        if ch == "\n":
+            in_code = False
+            i += 1
+        elif ch == "`":
+            counts["`"] += 1
+            in_code = not in_code
+            i += 1
+        elif in_code:
+            i += 1
+        elif ch == "~":
+            j = i
+            while j < m and rest[j] == "~":
+                j += 1
+            if j - i >= 2:
+                tilde_runs += 1
+            i = j
+        elif ch == "_":
+            # Intraword _ (word_word) is literal, not an emphasis delimiter;
+            # only a flanking _ needs to pair.
+            if not (i > 0 and rest[i - 1].isalnum()
+                    and i + 1 < m and rest[i + 1].isalnum()):
+                counts["_"] += 1
+            i += 1
+        elif ch in counts:  # *
+            counts[ch] += 1
+            i += 1
+        else:
+            i += 1
+    return all(v % 2 == 0 for v in counts.values()) and tilde_runs % 2 == 0
 
 
-def recover_from_transcripts(needle_text):
+def recover_from_transcripts(needle_text, scan_depth=TRANSCRIPT_SCAN_COUNT):
     """Find the needle in recent transcripts and return the exact source
-    markdown slice, or None if there's no confident match."""
+    markdown slice, or None if there's no confident match.
+
+    scan_depth caps how many of the most-recently-touched transcripts to search
+    (default TRANSCRIPT_SCAN_COUNT); raise it to dig content out of an older
+    session."""
     needle = _normalize_needle(needle_text)
     if len(needle) < MIN_MATCH_LEN:
         return None
-    for path in recent_transcripts():
+    for path in recent_transcripts(scan_depth):
         for raw in assistant_messages(path):
-            pos = _normalize(raw).find(needle)
-            if pos == -1:
-                continue
-            _, idx = _normalize_with_map(raw)  # build the map only on a hit
-            start = idx[pos]
-            end = idx[pos + len(needle) - 1] + 1
-            # A match that lands inside a code fence must carry the whole fence,
-            # or we'd return a block with a dangling ``` delimiter.
-            start, end = _snap_to_fences(start, end, _fence_blocks(raw))
-            # Expand over markers sitting right at the boundary so we don't
-            # slice through the middle of a **bold** or `code` span.
-            while start > 0 and raw[start - 1] in INLINE_MD_CHARS:
-                start -= 1
-            while end < len(raw) and raw[end] in INLINE_MD_CHARS:
-                end += 1
-            slice_ = raw[start:end].strip()
-            if slice_ and _balanced(slice_):
-                return slice_
+            # Try the default normalization first (all fence labels dropped); on
+            # a miss, retry with per-fence subsets of the language labels emitted,
+            # since a selection may include some blocks' labels but not others'
+            # (see _normalize_core). The enumeration only kicks in for a message
+            # that has labeled fences and didn't already match.
+            for emit_labels in _label_combos(raw):
+                pos = _normalize(raw, emit_labels).find(needle)
+                if pos == -1:
+                    continue
+                _, idx = _normalize_with_map(raw, emit_labels)  # map only on a hit
+                start = idx[pos]
+                end = idx[pos + len(needle) - 1] + 1
+                # A match that lands inside a code fence must carry the whole
+                # fence, or we'd return a block with a dangling ``` delimiter.
+                start, end = _snap_to_fences(start, end, _fence_blocks(raw))
+                # Expand over markers sitting right at the boundary so we don't
+                # slice through the middle of a **bold** or `code` span.
+                while start > 0 and raw[start - 1] in INLINE_MD_CHARS:
+                    start -= 1
+                while end < len(raw) and raw[end] in INLINE_MD_CHARS:
+                    end += 1
+                slice_ = raw[start:end].strip()
+                if slice_ and _balanced(slice_):
+                    return slice_
     return None
 
 
@@ -512,9 +676,10 @@ def acquire(args):
     return explicit, None                # history/selection text -> no matching HTML
 
 
-def build_markdown(needle_text, html, use_transcript=True):
+def build_markdown(needle_text, html, use_transcript=True,
+                   scan_depth=TRANSCRIPT_SCAN_COUNT):
     if use_transcript and needle_text and needle_text.strip():
-        recovered = recover_from_transcripts(needle_text)
+        recovered = recover_from_transcripts(needle_text, scan_depth)
         if recovered is not None:
             return recovered  # already-clean source markdown
     if html:
@@ -589,13 +754,28 @@ if _unittest is not None:
             self.assertEqual(_normalize_needle("  Foo\n  Bar  "), "foo bar")
 
     class BalancedTests(_unittest.TestCase):
-        def test_all_markers_must_pair(self):
-            # Regression: _balanced once checked only * and `.
-            self.assertTrue(_balanced("a *b* `c` _d_ ~e~"))
+        def test_marker_pairing(self):
+            # * _ ` must pair char-for-char (regression: _balanced once checked
+            # only * and `).
+            self.assertTrue(_balanced("a *b* `c` _d_"))
             self.assertFalse(_balanced("a _b"))
-            self.assertFalse(_balanced("a ~b"))
             self.assertFalse(_balanced("a `b"))
             self.assertFalse(_balanced("a *b"))
+
+        def test_lone_tilde_never_unbalances(self):
+            # A lone ~ is literal ("~50"), so it must not reject an otherwise
+            # balanced slice; only a dangling ~~ strikethrough run does.
+            self.assertTrue(_balanced("about ~50 items"))
+            self.assertTrue(_balanced("a ~~struck~~ b"))
+            self.assertFalse(_balanced("a ~~struck"))
+
+        def test_intraword_underscore_never_unbalances(self):
+            # An intraword _ (work_mem) is literal, not an emphasis delimiter, so
+            # an odd number of them must not reject a slice; a flanking _ still
+            # has to pair.
+            self.assertTrue(_balanced("set work_mem and maintenance_work_mem"))
+            self.assertTrue(_balanced("a _emph_ and work_mem"))
+            self.assertFalse(_balanced("a _emph and work_mem"))
 
     class StyleTests(_unittest.TestCase):
         def test_bold_weight(self):
@@ -669,6 +849,54 @@ if _unittest is not None:
             with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
                 self.assertIsNone(recover_from_transcripts("absent needle phrase"))
 
+        def test_recovers_inline_code_with_underscore(self):
+            # Regression: a selection whose only divergence from the source is an
+            # underscore inside an inline `code` span must still match. Before the
+            # fix, the source normalized to `todate` while the TUI needle kept
+            # `to_date`, so recovery silently fell through to plain reflow.
+            src = "Parsing uses `to_date`/`to_timestamp` on the raw HL7 strings."
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("to_date/to_timestamp on the raw HL7 strings")
+            self.assertEqual(got, "`to_date`/`to_timestamp` on the raw HL7 strings")
+
+        def test_recovers_with_lone_tilde(self):
+            # Regression: a lone ~ ("~50", approximately) is literal in the TUI,
+            # so the needle keeps it and the source markdown does too. Before the
+            # fix _normalize stripped every ~ as strikethrough, so the source
+            # normalized to "50-100" while the needle had "~50-100" -- one dropped
+            # char that broke the whole match and fell back to plain reflow.
+            src = "Drop `completionSize` to ~50–100 and lean on the timeout."
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts(
+                    "completionSize to ~50–100 and lean on the timeout")
+            self.assertEqual(got, "`completionSize` to ~50–100 and lean on the timeout")
+
+        def test_scan_depth_limits_search(self):
+            # scan_depth caps how many transcripts recovery looks at. With the
+            # needle in the 2nd-most-recent file, depth 1 misses it, depth 2 hits.
+            newer = self._write_transcript(["nothing relevant here at all"])
+            older = self._write_transcript(["a distinctive findable phrase here"])
+            files = [newer, older]  # index 0 == most recent
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n: files[:n]):
+                self.assertIsNone(
+                    recover_from_transcripts("distinctive findable phrase here", scan_depth=1))
+                self.assertEqual(
+                    recover_from_transcripts("distinctive findable phrase here", scan_depth=2),
+                    "distinctive findable phrase here")
+
+        def test_recovers_intraword_underscore_in_prose(self):
+            # Regression: a snake_case identifier in plain prose (no backticks,
+            # no fence) -- work_mem -- must still match. Before the fix _normalize
+            # stripped the underscore to "workmem" while the TUI needle kept it,
+            # breaking recovery of any message mentioning such an identifier.
+            src = "spilling to disk (work_mem too small for the data)"
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("work_mem too small for the data")
+            self.assertEqual(got, "work_mem too small for the data")
+
         def test_recovers_fenced_code_block(self):
             # The TUI renders neither the ```python fence nor its info string, and
             # keeps the snake_case underscore literal -- so the needle is just the
@@ -678,6 +906,40 @@ if _unittest is not None:
             with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
                 got = recover_from_transcripts("foo_bar = compute_value(x)")
             self.assertEqual(got, "```python\nfoo_bar = compute_value(x)\n```")
+
+        def test_recovers_when_needle_includes_fence_label(self):
+            # Regression: some TUI renders show the fence's language as a visible
+            # label above the block, so it lands in the copied needle ("fish\ncmd").
+            # The default normalization drops the info string, so recovery must
+            # retry with it emitted -- returning the block WITH its ```fish fence.
+            src = "Run it:\n\n```fish\nkubectl get pods\n```\n\nDone."
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("fish\nkubectl get pods")
+            self.assertEqual(got, "```fish\nkubectl get pods\n```")
+
+        def test_recovers_without_fence_label_when_absent(self):
+            # The complementary case: the same source, but the needle omits the
+            # label (the TUI/selection dropped it). Default normalization matches
+            # first, so recovery still returns the fenced block.
+            src = "Run it:\n\n```fish\nkubectl get pods\n```\n\nDone."
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("kubectl get pods")
+            self.assertEqual(got, "```fish\nkubectl get pods\n```")
+
+        def test_recovers_mixed_fence_labels_in_one_message(self):
+            # Regression: two adjacent blocks where the selection kept ONE label
+            # (fish) but not the other (sql) -- a recognized language renders
+            # highlighted with no visible label, an unrecognized one shows its
+            # name. Neither all-off nor all-on matches; recovery must find the
+            # per-fence subset that emits only fish, and return the exact source.
+            src = "```sql\nSELECT 1\n```\n```fish\nls -a\n```"
+            p = self._write_transcript([src])
+            needle = "SELECT 1\nfish\nls -a"  # sql label absent, fish label present
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts(needle)
+            self.assertEqual(got, src)
 
         def test_recovers_across_blocks_and_prose(self):
             # A needle spanning code, interleaved prose, and a second code block
@@ -695,11 +957,79 @@ if _unittest is not None:
             # ```bash renders to nothing -- no stray "bash" in the normalized text.
             self.assertEqual(_normalize("a\n```bash\ncode\n```\nb"), "a code b")
 
+        def test_emit_labels_surfaces_opening_fence_label(self):
+            # With emit_labels, an OPENING fence's language label is emitted as a
+            # word (some blocks show it); the closing fence still emits nothing,
+            # and the default (drop) mode is unchanged.
+            self.assertEqual(_normalize("a\n```fish\ncode\n```\nb"), "a code b")
+            self.assertEqual(_normalize("a\n```fish\ncode\n```\nb", emit_labels=True),
+                             "a fish code b")
+
+        def test_emit_labels_is_per_fence(self):
+            # A per-fence set emits only the selected opening fences' labels, so a
+            # message mixing a shown label with a hidden one can be matched. Here
+            # fence 0 (sql) stays hidden and fence 1 (fish) is surfaced.
+            raw = "```sql\nSELECT 1\n```\n```fish\nls\n```"
+            # (trailing space: the closing fence contributes an inter-line space
+            # that _normalize leaves in; _normalize_needle is what strips.)
+            self.assertEqual(_normalize(raw, emit_labels=frozenset({1})),
+                             "select 1 fish ls ")
+            self.assertEqual(_normalize(raw, emit_labels=frozenset({0})),
+                             "sql select 1 ls ")
+
         def test_md_chars_kept_inside_fence(self):
             # Inside a fence, _ * ~ ` are literal code, not markup.
             self.assertIn("foo_bar", _normalize("```\nfoo_bar\n```"))
             # ...but stripped in prose, as before.
             self.assertEqual(_normalize("**hi**"), "hi")
+
+        def test_md_chars_kept_inside_inline_code(self):
+            # The TUI renders inline `to_date` with its underscore visible, so the
+            # needle keeps it; the normalized source must too (backticks dropped,
+            # underscore kept) or recovery misses snake_case identifiers.
+            self.assertEqual(_normalize("call `to_date`/`to_timestamp` now"),
+                             "call to_date/to_timestamp now")
+            # Emphasis outside code is still stripped; markers inside are literal.
+            self.assertEqual(_normalize("a `b_c` **d** _e_"), "a b_c d e")
+
+        def test_inline_code_state_resets_each_line(self):
+            # A lone backtick doesn't swallow the next line's emphasis markup.
+            self.assertEqual(_normalize("a `b\n_c_ d"), "a b c d")
+
+        def test_lone_tilde_kept_but_strikethrough_dropped(self):
+            # A lone ~ is literal ("~50"); the TUI shows it, so we keep it. A
+            # ~~pair~~ IS strikethrough markup the TUI strips.
+            self.assertEqual(_normalize("about ~50 items"), "about ~50 items")
+            self.assertEqual(_normalize("a ~~struck~~ b"), "a struck b")
+            # Inside a fence tildes are literal code regardless of pairing.
+            self.assertEqual(_normalize("a\n```\n~~x~~\n```\nb"), "a ~~x~~ b")
+
+        def test_intraword_underscore_kept_flanking_stripped(self):
+            # An intraword underscore (work_mem, snake_case) is literal in
+            # CommonMark, so the TUI shows it and the needle keeps it -- the
+            # normalized source must too, even in plain prose with no backticks.
+            # A flanking _ is still emphasis the TUI strips.
+            self.assertEqual(_normalize("set work_mem too small"),
+                             "set work_mem too small")
+            self.assertEqual(_normalize("maintenance_work_mem and shared_buffers"),
+                             "maintenance_work_mem and shared_buffers")
+            self.assertEqual(_normalize("a _emph_ word"), "a emph word")
+            # A digit_digit underscore is literal too (e.g. "1_000").
+            self.assertEqual(_normalize("value 1_000 here"), "value 1_000 here")
+
+        def test_map_matches_normalize_with_intraword_underscore(self):
+            raw = "set work_mem now"
+            norm, idx = _normalize_with_map(raw)
+            self.assertEqual(norm, _normalize(raw))
+            self.assertEqual(len(norm), len(idx))
+            self.assertEqual(raw[idx[norm.find("work_mem")]], "w")
+
+        def test_map_matches_normalize_with_inline_code(self):
+            raw = "run `a_b` then"
+            norm, idx = _normalize_with_map(raw)
+            self.assertEqual(norm, _normalize(raw))
+            self.assertEqual(len(norm), len(idx))
+            self.assertEqual(raw[idx[norm.find("a_b")]], "a")
 
         def test_map_matches_normalize_with_fences(self):
             raw = "x\n```py\na_b = 1\n```\ny"
@@ -707,6 +1037,13 @@ if _unittest is not None:
             self.assertEqual(norm, _normalize(raw))
             self.assertEqual(len(norm), len(idx))
             self.assertEqual(raw[idx[norm.find("a_b")]], "a")
+
+        def test_labeled_fence_ordinals(self):
+            # Only opening fences with a non-empty info string count, in doc
+            # order: here fence 0 (sql) and fence 2 (fish) are labeled; fence 1
+            # (bare ```) is not.
+            raw = "```sql\na\n```\n```\nb\n```\n```fish\nc\n```"
+            self.assertEqual(_labeled_fence_ordinals(raw), [0, 2])
 
         def test_fence_blocks_and_snap(self):
             raw = "```\nABCDE\n```"  # block spans the whole string
@@ -766,7 +1103,7 @@ if _unittest is not None:
     class BuildMarkdownTests(_unittest.TestCase):
         def test_transcript_takes_priority(self):
             with _patched(sys.modules[__name__], "recover_from_transcripts",
-                          lambda t: "RECOVERED"):
+                          lambda t, scan_depth=TRANSCRIPT_SCAN_COUNT: "RECOVERED"):
                 self.assertEqual(build_markdown("needle", "<b>x</b>"), "RECOVERED")
 
         def test_html_fallback_when_no_transcript(self):
@@ -789,6 +1126,9 @@ def main():
     ap.add_argument("text", nargs="?", help="explicit plain-text input (else stdin, else live clipboard)")
     ap.add_argument("--quote", action="store_true", help="wrap as an Obsidian > [!quote] callout")
     ap.add_argument("--no-transcript", action="store_true", help="skip A3 transcript recovery")
+    ap.add_argument("--scan-depth", type=int, default=TRANSCRIPT_SCAN_COUNT, metavar="N",
+                    help="how many recent transcripts to search for a match "
+                         f"(default {TRANSCRIPT_SCAN_COUNT}); raise to dig out older sessions")
     ap.add_argument("--html-file", help="read the HTML flavor from a file (testing)")
     ap.add_argument("--test", action="store_true", help="run the built-in unit tests and exit")
     args = ap.parse_args()
@@ -797,7 +1137,8 @@ def main():
         sys.exit(_run_tests())
 
     needle_text, html = acquire(args)
-    md = build_markdown(needle_text, html, use_transcript=not args.no_transcript)
+    md = build_markdown(needle_text, html, use_transcript=not args.no_transcript,
+                        scan_depth=args.scan_depth)
     if not md:
         sys.stderr.write("paste-reflow: nothing to reformat\n")
         sys.exit(1)

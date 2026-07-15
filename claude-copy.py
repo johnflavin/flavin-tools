@@ -41,7 +41,9 @@ resolves. Clipboard access is isolated in read_clipboard_text().
 
 import argparse
 import difflib
+import heapq
 import json
+import os
 import re
 import subprocess
 import sys
@@ -112,43 +114,70 @@ def read_clipboard_text():
 # ---------------------------------------------------------------------------
 
 def recent_transcripts(n=TRANSCRIPT_SCAN_COUNT):
+    """The n most-recently-modified transcript files, newest first.
+
+    Ranking by mtime means we must stat every file -- there's no cheaper way to
+    learn recency (directory mtimes don't track appends to existing files). But
+    heapq.nlargest streams the glob and keeps only an n-sized heap, so we avoid
+    materializing and fully sorting the whole (ever-growing) list."""
     base = Path.home() / ".claude" / "projects"
-    files = sorted(
-        base.glob("*/*.jsonl"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return files[:n]
+
+    def mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return -1.0
+
+    return heapq.nlargest(n, base.glob("*/*.jsonl"), key=mtime)
+
+
+def _reversed_lines(f, chunk_size=1 << 16):
+    """Yield a binary file's newline-separated lines from last to first, reading
+    backward one chunk at a time so a caller that stops early never touches the
+    front of a many-MB file. Splitting on b'\\n' is UTF-8-safe -- 0x0A never
+    appears inside a multi-byte codepoint -- so each yielded line decodes on its
+    own. Lines have no trailing newline; a final blank line yields b''."""
+    f.seek(0, os.SEEK_END)
+    pos = f.tell()
+    tail = b""  # the not-yet-complete left fragment carried across chunks
+    while pos > 0:
+        step = min(chunk_size, pos)
+        pos -= step
+        f.seek(pos)
+        buf = f.read(step) + tail
+        parts = buf.split(b"\n")
+        tail = parts[0]  # extends further left; hold until the next chunk
+        for piece in reversed(parts[1:]):
+            yield piece
+    yield tail
 
 
 def assistant_messages(path):
-    """Raw markdown of each assistant text block, newest first.
+    """Yield the markdown of each assistant text block, newest first.
 
-    Streams the file line-by-line (transcripts run to many MB) and skips the
-    cheap way past non-assistant lines before paying for json.loads -- most of a
-    session is user/tool_result/tool_use entries. We still buffer the matched
-    texts and reverse, since JSONL is forward-only and the caller wants newest
-    first."""
-    msgs = []
+    A generator: it reads the transcript backward (see _reversed_lines) and
+    parses one line at a time, so a caller matching against the newest message --
+    the common case -- never reads or json.loads the rest of the file. Skips the
+    cheap way past non-assistant lines before paying for json.loads (most of a
+    session is user/tool_result/tool_use entries)."""
     try:
-        f = path.open(errors="replace")
+        f = open(path, "rb")
     except OSError:
-        return msgs
+        return
     with f:
-        for line in f:
-            if '"assistant"' not in line:
+        for raw_line in _reversed_lines(f):
+            if b'"assistant"' not in raw_line:
                 continue
             try:
-                obj = json.loads(line)
+                obj = json.loads(raw_line)
             except ValueError:
                 continue
             if obj.get("type") != "assistant":
                 continue
-            for block in obj.get("message", {}).get("content", []) or []:
-                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                    msgs.append(block["text"])
-    msgs.reverse()
-    return msgs
+            texts = [b["text"] for b in obj.get("message", {}).get("content", []) or []
+                     if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+            for text in reversed(texts):  # last block of the message is newest
+                yield text
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +551,27 @@ if _unittest is not None:
             raw = "```\nstuff to the end"
             self.assertEqual(_fence_blocks(raw), [(0, len(raw))])
 
+    class ReversedLinesTests(_unittest.TestCase):
+        def _rev(self, data, chunk_size):
+            import io
+            return [b.decode() for b in _reversed_lines(io.BytesIO(data), chunk_size)]
+
+        def test_no_trailing_newline(self):
+            # Small chunk forces multi-chunk reassembly across boundaries.
+            self.assertEqual(self._rev(b"AB\nCD\nEF", 3), ["EF", "CD", "AB"])
+
+        def test_trailing_newline_yields_blank_first(self):
+            self.assertEqual(self._rev(b"AB\nCD\n", 3), ["", "CD", "AB"])
+
+        def test_single_line(self):
+            self.assertEqual(self._rev(b"only line", 4), ["only line"])
+
+        def test_matches_forward_split_reversed(self):
+            data = ("some\nlonger\nmultiline\ncontent\nhere" * 3).encode()
+            for cs in (1, 4, 7, 4096):
+                self.assertEqual(self._rev(data, cs),
+                                 list(reversed(data.decode().split("\n"))))
+
     class ClipboardTests(_unittest.TestCase):
         def test_reads_pbpaste_stdout(self):
             with _patched(subprocess, "run", _fake_run("clip contents")):
@@ -571,7 +621,15 @@ if _unittest is not None:
 
         def test_assistant_messages_streams_newest_first(self):
             p = self._write_transcript(["first", "second"])
-            self.assertEqual(assistant_messages(p), ["second", "first"])
+            self.assertEqual(list(assistant_messages(p)), ["second", "first"])
+
+        def test_assistant_messages_is_lazy(self):
+            # It's a generator, so a caller can stop after the newest message
+            # without the rest being parsed. Taking one item must yield "newest".
+            p = self._write_transcript(["oldest", "newest"])
+            gen = assistant_messages(p)
+            self.assertEqual(next(gen), "newest")
+            gen.close()
 
         def test_short_needle_rejected(self):
             self.assertIsNone(self._recover(["short text here"], "short"))

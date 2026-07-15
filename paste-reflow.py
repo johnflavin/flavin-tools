@@ -54,6 +54,14 @@ INLINE_MD_CHARS = set("*`_~")
 # info string, so for matching purposes these lines contribute nothing.
 FENCE_LINE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*$")
 
+# The leading marker of an ATX heading: up to 3 spaces of indent then 1-6 `#`.
+# CommonMark only treats it as a heading if a space/tab (or end of line) follows
+# the # run -- "#tag" is literal text -- so callers must verify that separately.
+# The TUI renders headings with the # markers (and any closing # run) stripped.
+HEADING_HASHES = re.compile(r"[ \t]{0,3}#{1,6}")
+# The optional closing # run of an ATX heading (must be preceded by whitespace).
+HEADING_CLOSE = re.compile(r"[ \t]+#+[ \t]*\Z")
+
 # How many of the most-recently-touched transcripts to search by default. Bumped
 # 3 -> 10 so a source session doesn't fall out of range when several worktree/CC
 # sessions are active in parallel (the case that broke recovery). Transcripts are
@@ -166,6 +174,11 @@ def _normalize_core(raw, want_map, emit_labels=False):
         False/empty -> emit no labels; True -> emit every opening fence's label;
         a set of ints -> emit only the opening fences whose 0-based document
         order is in the set. The closing fence has no info string, emits nothing.
+      * An ATX heading's markers (leading `#`..`######` and any closing `#` run)
+        render to nothing in the TUI, so we drop them and keep only the heading
+        text -- otherwise a heading mid-selection ("## Foo") wouldn't line up
+        with the needle ("Foo"). Headings only exist outside fenced blocks; a `#`
+        inside a fence (a shell/py comment) stays literal.
       * Inside a fenced block we DON'T drop `* ` _ ~`: there they're literal code
         characters that the TUI renders verbatim, so the needle keeps them too.
       * Inside an inline `code` span (single backticks) the same holds: the TUI
@@ -224,7 +237,20 @@ def _normalize_core(raw, want_map, emit_labels=False):
                 fence_ord += 1
         else:
             in_code = False  # inline code never spans a physical line
-            for off in range(pos, line_end):
+            line_start, line_stop = pos, line_end
+            if not in_fence:
+                # Strip an ATX heading's markers: the TUI renders "## Foo" as
+                # just "Foo". Only a # run followed by whitespace or end-of-line
+                # is a heading ("#tag" is literal); any closing # run goes too.
+                hm = HEADING_HASHES.match(raw, pos, line_end)
+                if hm and (hm.end() == line_end or raw[hm.end()] in " \t"):
+                    line_start = hm.end()
+                    while line_start < line_end and raw[line_start] in " \t":
+                        line_start += 1
+                    cm = HEADING_CLOSE.search(raw[line_start:line_end])
+                    if cm:
+                        line_stop = line_start + cm.start()
+            for off in range(line_start, line_stop):
                 ch = raw[off]
                 if not in_fence:
                     if ch == "`":
@@ -234,17 +260,19 @@ def _normalize_core(raw, want_map, emit_labels=False):
                         if ch == "~":
                             # Strikethrough is a matched ~~ pair; a lone ~ is
                             # literal text the TUI shows verbatim (e.g. "~50"), so
-                            # keep it. Drop a ~ only within a ~~ run.
-                            if (off + 1 < line_end and raw[off + 1] == "~") or \
-                               (off > pos and raw[off - 1] == "~"):
+                            # keep it. Drop a ~ only within a ~~ run. (Neighbor
+                            # checks stay within the line's content region so a
+                            # stripped heading marker never counts as adjacent.)
+                            if (off + 1 < line_stop and raw[off + 1] == "~") or \
+                               (off > line_start and raw[off - 1] == "~"):
                                 continue
                         elif ch == "_":
                             # An intraword underscore (word_word) is literal in
                             # CommonMark -- it can't open or close emphasis -- so
                             # the TUI shows it verbatim (work_mem, snake_case).
                             # Keep it; strip only a flanking _ that is emphasis.
-                            if not (off > pos and raw[off - 1].isalnum()
-                                    and off + 1 < line_end and raw[off + 1].isalnum()):
+                            if not (off > line_start and raw[off - 1].isalnum()
+                                    and off + 1 < line_stop and raw[off + 1].isalnum()):
                                 continue
                         elif ch in INLINE_MD_CHARS:
                             continue  # * emphasis the TUI renders away
@@ -359,6 +387,23 @@ def _snap_to_fences(start, end, blocks):
     return start, end
 
 
+def _snap_to_heading_start(start, raw):
+    """If `start` sits at the first text char of an ATX heading -- i.e. the whole
+    of that line before `start` is just the heading's `#` marker and its spaces
+    -- move it back onto the marker. A selection that began at the start of a
+    heading line thus keeps its "## " rather than dropping it (normalize strips
+    heading markers, so the raw match otherwise starts past them)."""
+    ls = raw.rfind("\n", 0, start) + 1  # start of the line containing `start`
+    hm = HEADING_HASHES.match(raw, ls, start)
+    # A real heading needs whitespace after the # run; "##content" is literal.
+    if not hm or hm.end() >= start or raw[hm.end()] not in " \t":
+        return start
+    j = hm.end()
+    while j < start and raw[j] in " \t":
+        j += 1
+    return ls if j == start else start
+
+
 def _normalize_needle(text):
     return re.sub(r"\s+", " ", text).strip().lower()
 
@@ -453,6 +498,10 @@ def recover_from_transcripts(needle_text, scan_depth=TRANSCRIPT_SCAN_COUNT):
                     start -= 1
                 while end < len(raw) and raw[end] in INLINE_MD_CHARS:
                     end += 1
+                # If the match began at the text of a heading, pull the "## "
+                # marker back in -- a selection that started at the line head
+                # meant to include it (normalize drops markers for alignment).
+                start = _snap_to_heading_start(start, raw)
                 slice_ = raw[start:end].strip()
                 if slice_ and _balanced(slice_):
                     return slice_
@@ -928,6 +977,42 @@ if _unittest is not None:
                 got = recover_from_transcripts("kubectl get pods")
             self.assertEqual(got, "```fish\nkubectl get pods\n```")
 
+        def test_recovers_keeps_leading_heading_marker(self):
+            # A selection that begins at the start of a heading line keeps its
+            # marker -- the user selected the whole line, so the recovered slice
+            # should carry it even though the TUI/needle rendered it away. Every
+            # heading level h1-h6 is snapped back, not just "##".
+            for lvl in range(1, 7):
+                src = "#" * lvl + " Title Here\n\nSome body text after."
+                p = self._write_transcript([src])
+                needle = "Title Here\nSome body text after."  # marker rendered away
+                with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                    got = recover_from_transcripts(needle)
+                self.assertEqual(got, src)
+
+        def test_recovers_midselection_heading_marker_when_leading_absent(self):
+            # A heading NOT at the start of the selection is preserved because the
+            # raw slice spans it; only a leading heading relies on the snap. Here
+            # the needle starts in prose, so the ## is naturally inside the slice.
+            src = "Intro line.\n\n### Sub\n\nTail line."
+            p = self._write_transcript([src])
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts("Intro line.\nSub\nTail line.")
+            self.assertEqual(got, src)
+
+        def test_recovers_across_midselection_heading(self):
+            # Regression: a needle spanning a heading in the MIDDLE of the
+            # selection must still match. The TUI drops "## " so the needle has
+            # bare "A Heading", but normalize kept the # as literal text, so the
+            # source read "## a heading" and alignment broke. The recovered slice
+            # is the raw source, heading markers intact.
+            src = "Intro para.\n\n## A Heading\n\nBody follows here."
+            p = self._write_transcript([src])
+            needle = "Intro para.\nA Heading\nBody follows here."  # as TUI renders
+            with _patched(sys.modules[__name__], "recent_transcripts", lambda n=3: [p]):
+                got = recover_from_transcripts(needle)
+            self.assertEqual(got, src)
+
         def test_recovers_mixed_fence_labels_in_one_message(self):
             # Regression: two adjacent blocks where the selection kept ONE label
             # (fish) but not the other (sql) -- a recognized language renders
@@ -1037,6 +1122,34 @@ if _unittest is not None:
             self.assertEqual(norm, _normalize(raw))
             self.assertEqual(len(norm), len(idx))
             self.assertEqual(raw[idx[norm.find("a_b")]], "a")
+
+        def test_atx_heading_markers_stripped(self):
+            # "## Foo" renders as "Foo" in the TUI, so the markers -- leading run
+            # and any closing run -- drop out of the normalized text. Every level
+            # h1-h6 is handled (the # run is 1-6 long).
+            self.assertEqual(_normalize("## Where the text"), "where the text")
+            self.assertEqual(_normalize("# Title ##"), "title")
+            self.assertEqual(_normalize("a\n\n### Heading\n\nb"), "a heading b")
+            for lvl in range(1, 7):
+                self.assertEqual(_normalize("#" * lvl + " Heading"), "heading")
+
+        def test_hash_not_a_heading_is_literal(self):
+            # "#tag" (no space after the #) is literal text, not a heading.
+            self.assertEqual(_normalize("#tag stays"), "#tag stays")
+            # 7+ hashes isn't a valid ATX heading either.
+            self.assertEqual(_normalize("####### seven"), "####### seven")
+            # A '#' inside a fence is a literal comment, never a heading.
+            # (Trailing space: the closing fence leaves an inter-line space that
+            # _normalize keeps; _normalize_needle is what strips.)
+            self.assertEqual(_normalize("```\n# comment\ncode\n```"), "# comment code ")
+
+        def test_map_matches_normalize_with_heading(self):
+            raw = "## Big Title\n\nbody text"
+            norm, idx = _normalize_with_map(raw)
+            self.assertEqual(norm, _normalize(raw))
+            self.assertEqual(len(norm), len(idx))
+            # The first normalized char maps to "B" of Title, past the "## ".
+            self.assertEqual(raw[idx[0]], "B")
 
         def test_labeled_fence_ordinals(self):
             # Only opening fences with a non-empty info string count, in doc

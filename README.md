@@ -74,6 +74,43 @@ and the binary lands at `claude-copy-rs/target/release/claude-copy` — a drop-i
 replacement anywhere the Python script is invoked (no `python3` needed, and ~4×
 faster end to end).
 
+## tailscale-acl-toggle.py
+Toggles my membership in a Tailscale ACL group by commenting or un-commenting a
+single line of the tailnet policy file — the way I turn my access to the PHI
+servers on and off. I like leaving that access off by default (especially when
+running agents on my machine) and this removes the friction of doing it by hand
+in the admin console.
+
+The `tailscale` CLI can't touch the policy file, so it goes through the API. The
+policy file is HuJSON (JSON + `//` comments + trailing commas). The tool
+downloads the *raw* HuJSON text, flips the comment state of the one line that
+names me inside the target group, and uploads the raw text back — it never
+parses or re-serializes the JSON, so every comment and byte of whitespace
+outside that single line is preserved exactly. It scopes the edit to the named
+group and refuses to act (fails closed) if my identity isn't found there or
+appears on more than one line, and it sends `If-Match: <ETag>` on upload so a
+concurrent console edit is rejected rather than clobbered.
+
+    tailscale-acl-toggle.py status    # report ON/OFF, no changes
+    tailscale-acl-toggle.py off       # comment my line -> revoke access
+    tailscale-acl-toggle.py on        # un-comment -> grant access
+    tailscale-acl-toggle.py toggle    # flip whatever the current state is
+
+`--dry-run` previews the one-line diff without uploading; `-v` shows HTTP
+detail. Pure stdlib — no dependencies.
+
+Config lives in `~/.config/tailscale-acl-toggle/config.json` (group, my ACL
+identity, OAuth `client_id`, `tailnet`, and the `secret_command`); any value can
+be overridden with a flag. Auth is a Tailscale OAuth client (scope `acl`,
+write): the long-lived secret lives in 1Password and a short-lived API token is
+minted on each run, so there's nothing to rotate.
+
+### tailscale-acl-oauth-secret.sh
+The companion one-liner that prints the OAuth client secret via `op read`, in
+the same style as my other `op`-backed secret scripts. `tailscale-acl-toggle.py`
+runs it (configurable as `secret_command`) to fetch the secret; a bare filename
+resolves next to the tool, so the bundled script is found regardless of cwd.
+
 ## safelink-extractor.py
 This takes the stupid "safelink" redirect URLs that you get on links in Outlook and gives back the original URL.
 

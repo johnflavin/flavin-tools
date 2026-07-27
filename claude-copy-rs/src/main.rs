@@ -22,6 +22,11 @@
 //!      strip the TUI's 2-space indent, join soft-wrapped lines, keep paragraph and
 //!      list breaks.
 //!
+//! When the input is already clean source markdown -- e.g. from Claude Code's own
+//! /copy -- there's nothing to undo, and reflow would actively harm it (soft-wrap-
+//! joining a code block's lines into one). --verbatim skips straight to the
+//! optional --quote wrap, leaving the content untouched.
+//!
 //! The matcher is deliberately markup-agnostic. Rather than enumerate every way
 //! markdown markers can differ between the rendered TUI text and the raw source
 //! (bold, italic, code, strikethrough, intraword underscores, fence language
@@ -681,11 +686,12 @@ struct Args {
     text: Option<String>,
     quote: bool,
     no_transcript: bool,
+    verbatim: bool,
     scan_depth: usize,
 }
 
 const USAGE: &str = "\
-usage: claude-copy [-h] [--quote] [--no-transcript] [--scan-depth N] [text]
+usage: claude-copy [-h] [--quote] [--no-transcript] [--verbatim] [--scan-depth N] [text]
 
 Recover clean source markdown from a Claude Code TUI selection.
 
@@ -696,6 +702,9 @@ options:
   -h, --help       show this help message and exit
   --quote          wrap as an Obsidian > [!quote] callout
   --no-transcript  skip transcript recovery
+  --verbatim       skip both transcript recovery and reflow; quote-wrap the
+                   input as-is (for text already cleaned by Claude Code's /copy,
+                   where reflow would mangle code blocks)
   --scan-depth N   how many recent transcripts to search for a match
                    (default 10); raise to dig out older sessions
 ";
@@ -711,6 +720,7 @@ fn parse_args() -> Args {
         text: None,
         quote: false,
         no_transcript: false,
+        verbatim: false,
         scan_depth: TRANSCRIPT_SCAN_COUNT,
     };
     let parse_depth = |v: &str| {
@@ -726,6 +736,7 @@ fn parse_args() -> Args {
             }
             "--quote" => args.quote = true,
             "--no-transcript" => args.no_transcript = true,
+            "--verbatim" => args.verbatim = true,
             "--scan-depth" => {
                 let v = argv
                     .next()
@@ -770,8 +781,14 @@ fn acquire(args: &Args) -> String {
 }
 
 /// Transcript recovery first (when given transcripts to search and a non-blank
-/// needle), plain reflow as the fallback.
-fn build_markdown(needle_text: &str, transcripts: Option<&[PathBuf]>) -> String {
+/// needle), plain reflow as the fallback. Verbatim short-circuits both: the
+/// input is already clean source markdown (e.g. from Claude Code's own /copy),
+/// so we only trim the edges -- reflow would soft-wrap-join lines and mangle
+/// code blocks.
+fn build_markdown(needle_text: &str, transcripts: Option<&[PathBuf]>, verbatim: bool) -> String {
+    if verbatim {
+        return needle_text.trim().to_string();
+    }
     if let Some(paths) = transcripts {
         if !needle_text.trim().is_empty() {
             if let Some(recovered) = recover_in_files(needle_text, paths) {
@@ -785,8 +802,9 @@ fn build_markdown(needle_text: &str, transcripts: Option<&[PathBuf]>) -> String 
 fn main() {
     let args = parse_args();
     let needle_text = acquire(&args);
-    let transcripts = (!args.no_transcript).then(|| recent_transcripts(args.scan_depth));
-    let md = build_markdown(&needle_text, transcripts.as_deref());
+    let transcripts =
+        (!args.no_transcript && !args.verbatim).then(|| recent_transcripts(args.scan_depth));
+    let md = build_markdown(&needle_text, transcripts.as_deref(), args.verbatim);
     if md.is_empty() {
         eprintln!("claude-copy: nothing to reformat");
         std::process::exit(1);
@@ -929,15 +947,23 @@ mod tests {
         let src = "the transcript source text here";
         let p = write_transcript(&[src]);
         assert_eq!(
-            build_markdown("the transcript\nsource text here", Some(&[p])),
+            build_markdown("the transcript\nsource text here", Some(&[p]), false),
             src
         );
     }
 
     #[test]
     fn reflow_fallback_when_no_match() {
-        assert_eq!(build_markdown("  soft\n  wrap\n", Some(&[])), "soft wrap");
-        assert_eq!(build_markdown("  soft\n  wrap\n", None), "soft wrap");
+        assert_eq!(build_markdown("  soft\n  wrap\n", Some(&[]), false), "soft wrap");
+        assert_eq!(build_markdown("  soft\n  wrap\n", None, false), "soft wrap");
+    }
+
+    #[test]
+    fn verbatim_skips_recovery_and_reflow() {
+        // --verbatim must not reflow (which would join the code block's lines);
+        // it only trims the edges. It short-circuits before touching transcripts.
+        let src = "```py\nfoo = 1\nbar = 2\n```";
+        assert_eq!(build_markdown(&format!("\n{src}\n"), None, true), src);
     }
 
     // -- transcript recovery --------------------------------------------------------

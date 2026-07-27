@@ -37,6 +37,15 @@ It reads the clipboard's plain text and produces markdown two ways, best-first:
 Pass `--quote` to wrap the result in an Obsidian `> [!quote]` callout, `--scan-depth
 N` to search deeper into transcript history, or `--no-transcript` to skip tier 1.
 
+`--verbatim` skips **both** tiers (recovery *and* reflow) and quote-wraps the input
+as-is. Use it when the text is already clean source markdown — most usefully the
+output of Claude Code's own `/copy`, which copies a whole message verbatim. There's
+nothing for recovery to improve on, and reflow would actively harm it (soft-wrap-
+joining a code block's lines into one), so `--verbatim --quote` is the combo for
+turning a `/copy`'d message into an Obsidian quote. (Tier 1 still earns its keep for
+short highlighted snippets that `/copy` can't grab, since it only copies whole
+messages.)
+
 Input is the live clipboard by default, or an explicit string as an argument / on
 stdin (handy for an Alfred Universal Action against a clipboard-history entry).
 
@@ -54,18 +63,20 @@ import, then:
   `claude-copy-rs/target/release/claude-copy` in my checkout — `claude-copy.py`
   works there too, via its shebang).
 - Double-click each *Hotkey* object and assign a combo — one for "as Quote", one for
-  "raw". Leave the Argument at its default: the script reads the live clipboard
-  itself.
+  "raw", one for "verbatim as Quote". Leave the Argument at its default: the script
+  reads the live clipboard itself.
 
-It wires up, for both quote and raw modes, a *Hotkey* and a *Universal Action* →
-*Run Script* (`printf '%s' "$1" | "$SCRIPT_PATH" [--quote]`) → *Copy to Clipboard*
-with auto-paste. Universal Actions act on selected text / clipboard-history
+It wires up, for each of three modes — quote, raw, and verbatim-quote — a *Hotkey*
+and a *Universal Action* → *Run Script* (`printf '%s' "$1" | "$SCRIPT_PATH" [flags]`)
+→ *Copy to Clipboard* with auto-paste. The "verbatim as Quote" action runs `--quote
+--verbatim` — the shortcut for turning a `/copy`'d Claude Code message straight into
+an Obsidian quote. Universal Actions act on selected text / clipboard-history
 entries.
 
 ### claude-copy-rs
 A Rust port of `claude-copy.py` living in `claude-copy-rs/`, with the same behavior
-and CLI (`--quote`, `--no-transcript`, `--scan-depth N`) — the one difference is that
-the built-in tests run with `cargo test` instead of `--test`. The stdlib `difflib`
+and CLI (`--quote`, `--no-transcript`, `--verbatim`, `--scan-depth N`) — the one
+difference is that the built-in tests run with `cargo test` instead of `--test`. The stdlib `difflib`
 fuzzy alignment is ported by hand; `serde_json` is the only dependency. Build with
 
     cargo build --release --manifest-path claude-copy-rs/Cargo.toml

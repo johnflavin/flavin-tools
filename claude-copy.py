@@ -23,6 +23,13 @@ Pipeline:
      strip the TUI's 2-space indent, join soft-wrapped lines, keep paragraph and
      list breaks.
 
+The recovery + reflow pipeline exists to undo the TUI's mangling. When the input
+is *already* clean source markdown -- e.g. copied via Claude Code's own /copy --
+there's nothing to undo, and reflow would actively harm it (soft-wrap-joining the
+lines of a code block into one). Pass --verbatim to skip straight to the optional
+--quote wrap, leaving the content untouched. That's the intended combo for turning
+a /copy'd message into an Obsidian quote.
+
 The matcher is deliberately markup-agnostic. Rather than enumerate every way
 markdown markers can differ between the rendered TUI text and the raw source
 (bold, italic, code, strikethrough, intraword underscores, fence language
@@ -443,8 +450,14 @@ def acquire(args):
     return read_clipboard_text()
 
 
-def build_markdown(needle_text, use_transcript=True,
+def build_markdown(needle_text, use_transcript=True, verbatim=False,
                    scan_depth=TRANSCRIPT_SCAN_COUNT):
+    # Verbatim: the input is already clean source markdown (e.g. from Claude
+    # Code's own /copy), so skip both transcript recovery and reflow -- reflow
+    # would soft-wrap-join lines and mangle code blocks. Just trim the edges so
+    # a stray leading/trailing newline doesn't become a blank quote line.
+    if verbatim:
+        return needle_text.strip() if needle_text else ""
     if use_transcript and needle_text and needle_text.strip():
         recovered = recover_from_transcripts(needle_text, scan_depth)
         if recovered is not None:
@@ -602,6 +615,15 @@ if _unittest is not None:
                           lambda t, scan_depth=TRANSCRIPT_SCAN_COUNT: None):
                 self.assertEqual(build_markdown("  soft\n  wrap\n"), "soft wrap")
 
+        def test_verbatim_skips_recovery_and_reflow(self):
+            # --verbatim must not touch the content: no recovery, and crucially no
+            # reflow (which would join the code block's lines). Only edge trim.
+            def _boom(*a, **k):
+                raise AssertionError("recovery must not run under verbatim")
+            src = "```py\nfoo = 1\nbar = 2\n```"
+            with _patched(sys.modules[__name__], "recover_from_transcripts", _boom):
+                self.assertEqual(build_markdown("\n" + src + "\n", verbatim=True), src)
+
     class RecoveryTests(_unittest.TestCase):
         def _write_transcript(self, msgs):
             d = tempfile.mkdtemp()
@@ -728,6 +750,10 @@ def main():
     ap.add_argument("text", nargs="?", help="explicit plain-text input (else stdin, else live clipboard)")
     ap.add_argument("--quote", action="store_true", help="wrap as an Obsidian > [!quote] callout")
     ap.add_argument("--no-transcript", action="store_true", help="skip transcript recovery")
+    ap.add_argument("--verbatim", action="store_true",
+                    help="skip both transcript recovery and reflow; quote-wrap the input "
+                         "as-is (for text already cleaned by Claude Code's /copy, where "
+                         "reflow would mangle code blocks)")
     ap.add_argument("--scan-depth", type=int, default=TRANSCRIPT_SCAN_COUNT, metavar="N",
                     help="how many recent transcripts to search for a match "
                          f"(default {TRANSCRIPT_SCAN_COUNT}); raise to dig out older sessions")
@@ -739,7 +765,7 @@ def main():
 
     needle_text = acquire(args)
     md = build_markdown(needle_text, use_transcript=not args.no_transcript,
-                        scan_depth=args.scan_depth)
+                        verbatim=args.verbatim, scan_depth=args.scan_depth)
     if not md:
         sys.stderr.write("claude-copy: nothing to reformat\n")
         sys.exit(1)

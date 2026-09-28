@@ -49,16 +49,30 @@ without needing a library installed. Run the built-in tests with `--test`.
 `build-alfred-workflow.py` — edit that and re-run to regenerate). Double-click to
 import, then:
 
-- In *Configure Workflow*, set **SCRIPT_PATH** to your `claude-copy.py` (prompted
-  on install; defaults to my checkout path).
+- In *Configure Workflow*, set **SCRIPT_PATH** to your `claude-copy` executable
+  (prompted on install; defaults to the Rust binary at
+  `claude-copy-rs/target/release/claude-copy` in my checkout — `claude-copy.py`
+  works there too, via its shebang).
 - Double-click each *Hotkey* object and assign a combo — one for "as Quote", one for
   "raw". Leave the Argument at its default: the script reads the live clipboard
   itself.
 
 It wires up, for both quote and raw modes, a *Hotkey* and a *Universal Action* →
-*Run Script* (`printf '%s' "$1" | python3 "$SCRIPT_PATH" [--quote]`) → *Copy to
-Clipboard* with auto-paste. Universal Actions act on selected text / clipboard-history
+*Run Script* (`printf '%s' "$1" | "$SCRIPT_PATH" [--quote]`) → *Copy to Clipboard*
+with auto-paste. Universal Actions act on selected text / clipboard-history
 entries.
+
+### claude-copy-rs
+A Rust port of `claude-copy.py` living in `claude-copy-rs/`, with the same behavior
+and CLI (`--quote`, `--no-transcript`, `--scan-depth N`) — the one difference is that
+the built-in tests run with `cargo test` instead of `--test`. The stdlib `difflib`
+fuzzy alignment is ported by hand; `serde_json` is the only dependency. Build with
+
+    cargo build --release --manifest-path claude-copy-rs/Cargo.toml
+
+and the binary lands at `claude-copy-rs/target/release/claude-copy` — a drop-in
+replacement anywhere the Python script is invoked (no `python3` needed, and ~4×
+faster end to end).
 
 ## safelink-extractor.py
 This takes the stupid "safelink" redirect URLs that you get on links in Outlook and gives back the original URL.

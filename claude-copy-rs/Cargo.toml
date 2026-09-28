@@ -1,0 +1,12 @@
+[package]
+name = "claude-copy"
+version = "0.1.0"
+edition = "2021"
+description = "Recover clean source markdown from a Claude Code TUI selection"
+
+[dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "claude-copy"
+path = "src/main.rs"

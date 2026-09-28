@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate claude-copy.alfredworkflow -- the Alfred front-end for claude-copy.py.
+"""Generate claude-copy.alfredworkflow -- the Alfred front-end for claude-copy.
 
 This is the source of truth for the workflow. Edit here and re-run to regenerate
 the bundle; then re-import into Alfred (or edit in Alfred and re-export, your call).
@@ -9,8 +9,11 @@ The workflow wires up, for both quote and raw modes:
   - a Universal Action (acts on selected text / clipboard-history entries)
   - a Run Script action -> a Copy to Clipboard output with auto-paste
 
-The path to claude-copy.py is an Alfred *user-configuration* variable (SCRIPT_PATH),
-prompted at install time, so the bundle isn't tied to one machine's checkout.
+The path to the claude-copy executable is an Alfred *user-configuration* variable
+(SCRIPT_PATH), prompted at install time, so the bundle isn't tied to one machine's
+checkout. It defaults to the compiled Rust binary (see claude-copy-rs/; build with
+`cargo build --release`). Any executable that reads stdin works -- claude-copy.py
+runs via its shebang if you point SCRIPT_PATH back at it.
 """
 
 import os
@@ -18,8 +21,7 @@ import plistlib
 import zipfile
 
 # --- knobs ----------------------------------------------------------------
-PY3 = "/opt/homebrew/bin/python3"
-SCRIPT_PATH_DEFAULT = "/Users/jflavin/repos/flavin-tools/claude-copy.py"
+SCRIPT_PATH_DEFAULT = "/Users/jflavin/repos/flavin-tools/claude-copy-rs/target/release/claude-copy"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "claude-copy.alfredworkflow")
 
 # Stable UIDs so regenerating produces a deterministic, diffable bundle.
@@ -37,7 +39,7 @@ def script_obj(uid, quote):
     # it to the script on stdin. Empty $1 (hotkey, no argument) -> the script reads
     # the live clipboard itself.
     flag = " --quote" if quote else ""
-    body = 'printf \'%%s\' "$1" | %s "$SCRIPT_PATH"%s' % (PY3, flag)
+    body = 'printf \'%%s\' "$1" | "$SCRIPT_PATH"%s' % flag
     return {"uid": uid, "version": 2, "type": "alfred.workflow.action.script",
             "config": {"concurrently": False, "escaping": 102, "script": body,
                        "scriptargtype": 1, "scriptfile": "", "type": 11}}
@@ -72,7 +74,8 @@ info = {
     "disabled": False,
     "readme": ("Recovers the clean source markdown from text copied out of the Claude "
                "Code TUI.\n\n"
-               "Set SCRIPT_PATH (in Configure Workflow) to your claude-copy.py.\n\n"
+               "Set SCRIPT_PATH (in Configure Workflow) to your claude-copy executable "
+               "(the Rust binary from claude-copy-rs/, or claude-copy.py).\n\n"
                "Hotkeys are stripped on import -- double-click each Hotkey object and set "
                "your own combo. Leave its Argument as the default; the script reads the "
                "live clipboard itself.\n\n"
@@ -100,11 +103,13 @@ info = {
         {
             "type": "textfield",
             "variable": "SCRIPT_PATH",
-            "label": "claude-copy.py path",
-            "description": "Absolute path to claude-copy.py in your flavin-tools checkout.",
+            "label": "claude-copy path",
+            "description": "Absolute path to the claude-copy executable -- the built "
+                           "Rust binary (claude-copy-rs/target/release/claude-copy), "
+                           "or claude-copy.py.",
             "config": {
                 "default": SCRIPT_PATH_DEFAULT,
-                "placeholder": "/path/to/claude-copy.py",
+                "placeholder": "/path/to/claude-copy",
                 "required": True,
                 "trim": True,
             },

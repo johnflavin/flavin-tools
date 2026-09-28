@@ -122,6 +122,11 @@ the same style as my other `op`-backed secret scripts. `tailscale-acl-toggle.py`
 runs it (configurable as `secret_command`) to fetch the secret; a bare filename
 resolves next to the tool, so the bundled script is found regardless of cwd.
 
+## week-links.py
+Prints a bulleted list of Obsidian links to weekly notes (`- [[Week of YYYY-MM-DD]]`, one per Monday) for the top of a quarter note. Starts at the Monday of the current week; `--start YYYY-MM-DD` picks a different week and `--count N` changes the number of weeks (default 12).
+
+    week-links.py | pbcopy
+
 ## safelink-extractor.py
 This takes the stupid "safelink" redirect URLs that you get on links in Outlook and gives back the original URL.
 
